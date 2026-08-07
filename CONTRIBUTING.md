@@ -108,9 +108,10 @@ no CLA to sign; contributions are simply under GPL-3.0, same as the rest.
 
 `main` is protected:
 
-- **CI must pass.** Tests, the no-binaries check and the scrub check all run on
-  every pull request.
-- **History cannot be rewritten** — no force pushes, no branch deletion.
+- **CI runs on every pull request** — the tests, the no-binaries check and the
+  scrub check. Nothing gets merged with red CI.
+- **History cannot be rewritten** — no force pushes, no branch deletion. This
+  is enforced for everyone, the maintainer included.
 - **Conversations must be resolved** before a pull request merges.
 - **Commits must be signed off.** The web editor enforces this; from the
   command line use `git commit -s`.
