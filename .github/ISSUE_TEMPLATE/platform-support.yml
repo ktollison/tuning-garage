@@ -1,0 +1,53 @@
+name: Propose platform support
+description: Memory layout, checksums and OS IDs for a controller the app does not handle
+title: "[platform] "
+labels: ["submission", "platform"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Each platform module is **verify-only** — it reads and checks, it never
+        writes to a calibration. Proposals need a public source; please do not
+        paste manufacturer service documentation.
+
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      placeholder: "GM Gen IV E38"
+    validations:
+      required: true
+
+  - type: textarea
+    id: layout
+    attributes:
+      label: Memory layout
+      description: File size, segment table, OS ID location, anything already known
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: checksum
+    attributes:
+      label: Checksum scheme
+      description: How it is computed and over what range
+      render: text
+
+  - type: textarea
+    id: sources
+    attributes:
+      label: Sources
+      description: Open-source projects, forum threads, your own reverse engineering. Include licences — a GPL source means the resulting module is GPL too.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: Confirmations
+      options:
+        - label: No manufacturer service material or proprietary documentation is included
+          required: true
+        - label: I have named the licence of any source I derived this from
+          required: true

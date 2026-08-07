@@ -1,0 +1,58 @@
+name: Identify a channel
+description: Tell us what a VCM Scanner parameter ID actually is
+title: "[channel] "
+labels: ["submission", "channel-dictionary"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The channel dictionary only learns names from parameters you have
+        charted, so bare channel lists come through as raw IDs. One real
+        42-channel layout had 35 unnamed. Every ID you name helps.
+
+  - type: input
+    id: pid
+    attributes:
+      label: Parameter ID
+      placeholder: "2301"
+    validations:
+      required: true
+
+  - type: input
+    id: label
+    attributes:
+      label: Channel name
+      description: Exactly as VCM Scanner shows it
+      placeholder: "Mass Airflow Sensor"
+    validations:
+      required: true
+
+  - type: input
+    id: unit
+    attributes:
+      label: Unit
+      description: The unit shown, and the numeric unit ID if you have it
+      placeholder: "Hz (unit 50)"
+
+  - type: input
+    id: platform
+    attributes:
+      label: Platform it appears on
+      placeholder: "GM Gen III"
+
+  - type: dropdown
+    id: source
+    attributes:
+      label: How do you know?
+      options:
+        - I charted it in VCM Scanner and read the label
+        - It appears in an exported layout/chart file
+        - It is in the HP Tuners parameter list
+        - Inferred from the values (say so below)
+    validations:
+      required: true
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything else

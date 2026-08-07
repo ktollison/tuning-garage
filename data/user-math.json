@@ -1,0 +1,56 @@
+{
+  "parameters": [
+    {
+      "id": "injector-duty-cycle-seed",
+      "name": "Injector duty cycle",
+      "category": "Fueling",
+      "expression": "(IPW_ms * RPM) / 1200",
+      "units": "%",
+      "inputs": "Injector pulse width (ms), Engine RPM",
+      "notes": "Above ~85% the injectors are near static — stop adding fuel, fix hardware. Formula assumes one injection event per cylinder per 2 crank revs (sequential on LS1). Map IPW/RPM to your actual VCM Scanner channel PIDs.",
+      "source": "Community-standard formula — verify against your own scanner/logs",
+      "status": "unverified",
+      "updated": "",
+      "sample": true
+    },
+    {
+      "id": "total-fuel-trim-seed",
+      "name": "Total fuel trim",
+      "category": "Fueling",
+      "expression": "LTFT + STFT",
+      "units": "%",
+      "inputs": "Long term fuel trim (%), Short term fuel trim (%)",
+      "notes": "The combined correction the PCM is applying. Use per-bank versions to spot bank-to-bank differences (exhaust leak, injector). Target within ±5% after MAF cal.",
+      "source": "Community-standard formula — verify against your own scanner/logs",
+      "status": "unverified",
+      "updated": "",
+      "sample": true
+    },
+    {
+      "id": "maf-correction-factor-seed",
+      "name": "MAF correction multiplier",
+      "category": "Fueling",
+      "expression": "(100 + LTFT + STFT) / 100",
+      "units": "multiplier",
+      "inputs": "LTFT (%), STFT (%)",
+      "notes": "Histogram this against MAF frequency (Hz) to see how much to scale each MAF table cell. Multiply the current g/s value by the cell average. Closed loop, warmed up, no PE — filter your log accordingly.",
+      "source": "Community-standard formula — verify against your own scanner/logs",
+      "status": "unverified",
+      "updated": "",
+      "sample": true
+    },
+    {
+      "id": "afr-error-wideband-seed",
+      "name": "AFR error (wideband)",
+      "category": "Fueling",
+      "expression": "(WB_AFR - Commanded_AFR) / Commanded_AFR * 100",
+      "units": "%",
+      "inputs": "Wideband AFR, Commanded AFR (or lambda pair)",
+      "notes": "Only meaningful once a wideband is installed. Positive = leaner than commanded. Prefer lambda over AFR to stay fuel-blend agnostic.",
+      "source": "Community-standard formula — verify against your own scanner/logs",
+      "status": "unverified",
+      "updated": "",
+      "sample": true
+    }
+  ]
+}

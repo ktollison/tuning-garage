@@ -1,0 +1,11 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Safety disclaimer — read this before tuning
+    url: https://github.com/ktollison/tuning-garage/blob/main/DISCLAIMER.md
+    about: What this software can and cannot tell you, and what is at stake if you get it wrong.
+  - name: Question, or not sure it's a bug?
+    url: https://github.com/ktollison/tuning-garage/discussions
+    about: Ask in Discussions. Reading a log, arguing with a number, or proposing an idea before building it.
+  - name: How to contribute (and what cannot be accepted)
+    url: https://github.com/ktollison/tuning-garage/blob/main/CONTRIBUTING.md
+    about: Scrub your datalog first. Calibration binaries are refused — here is why.

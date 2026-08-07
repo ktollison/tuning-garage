@@ -1,0 +1,53 @@
+name: Contribute a math parameter
+description: A formula worth shipping as a sample in User Math
+title: "[math] "
+labels: ["submission", "user-math"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Only formulas you wrote, or genuinely community-standard ones. Please
+        do not paste someone's proprietary Math Lab set.
+
+  - type: input
+    id: name
+    attributes:
+      label: Name
+      placeholder: "Injector duty cycle"
+    validations:
+      required: true
+
+  - type: textarea
+    id: expression
+    attributes:
+      label: Expression
+      description: Scanner syntax is fine — `[ParameterID.UnitID]` and all
+      render: text
+    validations:
+      required: true
+
+  - type: input
+    id: units
+    attributes:
+      label: Output unit
+      placeholder: "%"
+    validations:
+      required: true
+
+  - type: textarea
+    id: why
+    attributes:
+      label: What it is for, and how to read the result
+      description: Include the range that means trouble, if there is one.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: Confirmations
+      options:
+        - label: I wrote this, or it is a widely published standard formula
+          required: true
+        - label: I am contributing it under GPL-3.0
+          required: true

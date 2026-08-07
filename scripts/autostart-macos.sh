@@ -1,0 +1,119 @@
+#!/bin/sh
+# Keep the Tuning Garage app running via launchd (macOS).
+#
+#   sh scripts/autostart-macos.sh install     start now + at every login
+#   sh scripts/autostart-macos.sh status      is it loaded and answering?
+#   sh scripts/autostart-macos.sh restart     reload after pulling changes
+#   sh scripts/autostart-macos.sh uninstall   stop and remove
+#
+# The agent runs as you, not as root, and the server binds 127.0.0.1 only —
+# nothing is exposed to the network. Logs land in logs/ (gitignored).
+
+set -e
+
+LABEL="com.tuninggarage.app"
+REPO="$(cd "$(dirname "$0")/.." && pwd)"
+PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
+PORT="${PORT:-4590}"
+TARGET="gui/$(id -u)"
+
+# Resolve node to an absolute path — launchd runs with a minimal PATH that
+# does not include /usr/local/bin or Homebrew, so "node" alone will not work.
+NODE="${NODE:-$(command -v node || true)}"
+[ -x "$NODE" ] || { echo "node not found on PATH. Install Node 18+ or set NODE=/path/to/node."; exit 1; }
+
+cmd="${1:-install}"
+
+case "$cmd" in
+install)
+  mkdir -p "$HOME/Library/LaunchAgents" "$REPO/logs"
+
+  cat > "$PLIST" <<PLISTEOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>$LABEL</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>$NODE</string>
+        <string>$REPO/app/server.mjs</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>$REPO</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PORT</key>
+        <string>$PORT</string>
+        <key>TUNING_REPO</key>
+        <string>$REPO</string>
+    </dict>
+
+    <!-- Start at login and relaunch if it ever exits -->
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <!-- Don't hammer relaunches if it fails immediately -->
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <key>StandardOutPath</key>
+    <string>$REPO/logs/app.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>$REPO/logs/app.err.log</string>
+</dict>
+</plist>
+PLISTEOF
+
+  # bootout first so "install" is safe to re-run after an edit
+  launchctl bootout "$TARGET/$LABEL" 2>/dev/null || true
+  launchctl bootstrap "$TARGET" "$PLIST"
+  launchctl enable "$TARGET/$LABEL" 2>/dev/null || true
+
+  echo "Installed $LABEL"
+  echo "  node   $NODE"
+  echo "  repo   $REPO"
+  echo "  url    http://localhost:$PORT"
+  sleep 1
+  sh "$0" status
+  ;;
+
+status)
+  if launchctl print "$TARGET/$LABEL" >/dev/null 2>&1; then
+    pid=$(launchctl print "$TARGET/$LABEL" | awk '/^\tpid = /{print $3}')
+    echo "agent loaded${pid:+, pid $pid}"
+  else
+    echo "agent NOT loaded — run: sh scripts/autostart-macos.sh install"
+  fi
+  code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 3 "http://127.0.0.1:$PORT/api/state" || echo 000)
+  if [ "$code" = "200" ]; then
+    echo "server answering on http://localhost:$PORT (HTTP $code)"
+  else
+    echo "server NOT answering on port $PORT (HTTP $code) — check logs/app.err.log"
+  fi
+  ;;
+
+restart)
+  launchctl kickstart -k "$TARGET/$LABEL"
+  echo "restarted"
+  sleep 1
+  sh "$0" status
+  ;;
+
+uninstall)
+  launchctl bootout "$TARGET/$LABEL" 2>/dev/null || true
+  rm -f "$PLIST"
+  echo "Removed $LABEL. Logs left in $REPO/logs/."
+  ;;
+
+*)
+  echo "usage: sh scripts/autostart-macos.sh [install|status|restart|uninstall]"
+  exit 1
+  ;;
+esac

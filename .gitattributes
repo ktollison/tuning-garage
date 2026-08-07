@@ -1,0 +1,7 @@
+# Tune files and datalogs are binary — never diff, never mangle line endings
+*.bin binary
+*.hpt binary
+*.hpl binary
+*.tun binary
+*.xdf -text
+*.csv -text

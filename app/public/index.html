@@ -1,0 +1,1733 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tuning Garage</title>
+<style>
+  :root {
+    color-scheme: light;
+    --page: #f9f9f7; --surface: #fcfcfb; --ink: #0b0b0b; --ink-2: #52514e;
+    --muted: #898781; --grid: #e1e0d9; --border: rgba(11,11,11,0.10);
+    --accent: #2a78d6; --accent-soft: #cde2fb; --good: #006300; --warn: #b45309;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: dark;
+      --page: #0d0d0d; --surface: #1a1a19; --ink: #ffffff; --ink-2: #c3c2b7;
+      --muted: #898781; --grid: #2c2c2a; --border: rgba(255,255,255,0.10);
+      --accent: #3987e5; --accent-soft: #184f95; --good: #0ca30c; --warn: #fab219;
+    }
+  }
+  * { margin: 0; box-sizing: border-box; }
+  body { font: 14.5px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; background: var(--page); color: var(--ink); }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 22px 20px 60px; }
+
+  header { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+  h1 { font-size: 20px; font-weight: 650; }
+  .gitbar { display: flex; gap: 8px; align-items: center; font-size: 12.5px; color: var(--ink-2); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--good); display: inline-block; }
+  .dot.dirty { background: var(--warn); }
+
+  nav { display: flex; gap: 4px; flex-wrap: wrap; border-bottom: 1px solid var(--grid); margin-bottom: 18px; }
+  nav button { border: 0; background: none; color: var(--ink-2); font: inherit; padding: 8px 12px; cursor: pointer; border-bottom: 2px solid transparent; }
+  nav button.on { color: var(--ink); font-weight: 600; border-bottom-color: var(--accent); }
+
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px; margin-bottom: 14px; }
+  .card h2 { font-size: 13px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; margin-bottom: 10px; }
+  .card h3 { font-size: 14.5px; font-weight: 650; margin: 12px 0 6px; }
+  .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+  th { text-align: left; color: var(--muted); font-weight: 600; font-size: 12px; padding: 4px 8px 6px 0; }
+  td { padding: 6px 8px 6px 0; border-top: 1px solid var(--grid); color: var(--ink-2); vertical-align: top; }
+  td:first-child { color: var(--ink); }
+  .num { font-variant-numeric: tabular-nums; }
+
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  button.btn { font: inherit; font-size: 13px; padding: 6px 12px; border-radius: 7px; border: 1px solid var(--border); background: var(--surface); color: var(--ink); cursor: pointer; }
+  button.btn:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.ghost { border: 0; background: none; color: var(--accent); padding: 2px 4px; cursor: pointer; font-size: 12.5px; }
+  button.danger { color: #d03b3b; }
+
+  input, textarea, select { font: inherit; font-size: 13.5px; color: var(--ink); background: var(--page); border: 1px solid var(--grid); border-radius: 7px; padding: 6px 9px; width: 100%; }
+  textarea { min-height: 64px; resize: vertical; }
+  label { display: block; font-size: 12px; color: var(--muted); margin: 10px 0 3px; font-weight: 600; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; }
+  .row > * { flex: 1; min-width: 140px; }
+  form .actions { margin-top: 14px; display: flex; gap: 8px; align-items: center; }
+
+  .chip { cursor: pointer; user-select: none; font-size: 15px; }
+  .badge { font-size: 11px; padding: 2px 7px; border-radius: 99px; border: 1px solid var(--border); color: var(--ink-2); }
+  .badge.verified { color: var(--good); border-color: var(--good); }
+  .badge.unverified { color: var(--warn); border-color: var(--warn); }
+
+  .bar { height: 8px; background: var(--grid); border-radius: 4px; overflow: hidden; }
+  .bar span { display: block; height: 100%; background: var(--accent); border-radius: 4px; }
+  .stage { display: grid; grid-template-columns: 200px 1fr 60px; gap: 12px; align-items: center; padding: 6px 0; }
+  .pct { font-size: 12px; color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; }
+
+  pre.md { white-space: pre-wrap; font: 12.5px/1.55 ui-monospace, Menlo, monospace; color: var(--ink-2); background: var(--page); border: 1px solid var(--grid); border-radius: 8px; padding: 12px; max-height: 420px; overflow: auto; }
+  .empty { color: var(--muted); font-style: italic; padding: 8px 0; }
+  .note { font-size: 12.5px; color: var(--muted); margin-top: 8px; }
+  .flash { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--ink); color: var(--page); padding: 9px 16px; border-radius: 8px; font-size: 13px; opacity: 0; transition: opacity .2s; pointer-events: none; max-width: 90vw; }
+  .flash.show { opacity: 1; }
+  .mathcard { border: 1px solid var(--grid); border-radius: 8px; padding: 12px 14px; margin-bottom: 10px; }
+  .mathcard .expr { font: 13px/1.5 ui-monospace, Menlo, monospace; background: var(--page); border: 1px solid var(--grid); border-radius: 6px; padding: 7px 10px; margin: 8px 0 6px; overflow-x: auto; }
+  .mathhead { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+  .mathhead b { font-size: 14px; }
+  .mdbody { font-size: 14.5px; color: var(--ink-2); }
+  .mdbody h2, .mdbody h3, .mdbody h4, .mdbody h5 { color: var(--ink); margin: 16px 0 6px; }
+  .mdbody h2 { font-size: 18px; } .mdbody h3 { font-size: 15.5px; } .mdbody h4 { font-size: 14.5px; }
+  .mdbody p { margin: 7px 0; }
+  .mdbody ul, .mdbody ol { margin: 7px 0 7px 22px; } .mdbody li { margin: 3px 0; }
+  .mdbody hr { border: 0; border-top: 1px solid var(--grid); margin: 16px 0; }
+  .mdbody blockquote { border-left: 3px solid var(--accent); padding: 2px 0 2px 12px; margin: 10px 0; }
+  .mdbody table { margin: 10px 0; } .mdbody code { font-size: 12.5px; }
+  .mdimg { max-width: 100%; border: 1px solid var(--border); border-radius: 8px; margin: 10px 0; display: block; }
+  .hash { font: 11px ui-monospace, Menlo, monospace; color: var(--muted); }
+  /* diverging scale for fuel trim: lean(+)=warm, rich(-)=cool, neutral gray at zero */
+  .heatcell { stroke: var(--surface); stroke-width: 2; }
+  .lowdata { opacity: .35; }
+  .chart text { font: 11px system-ui, sans-serif; fill: var(--muted); }
+  .chart .val { fill: var(--ink-2); font-variant-numeric: tabular-nums; }
+  .legend span { display: inline-block; width: 22px; height: 10px; vertical-align: middle; }
+  /* timeline rail */
+  .tl { position: relative; padding-left: 26px; }
+  .tl::before { content: ""; position: absolute; left: 7px; top: 6px; bottom: 6px; width: 2px; background: var(--grid); }
+  .tl-ev { position: relative; padding: 9px 0; border-bottom: 1px solid var(--grid); }
+  .tl-ev:last-child { border-bottom: 0; }
+  .tl-dot { position: absolute; left: -23px; top: 15px; width: 10px; height: 10px; border-radius: 50%; border: 2px solid var(--surface); }
+  .tl-date { font: 12px ui-monospace, Menlo, monospace; color: var(--muted); }
+  .tl-title { font-weight: 600; font-size: 14px; }
+  .tl-detail { font-size: 13px; color: var(--ink-2); word-break: break-word; }
+  .tl-flash .tl-title { font-size: 15px; }
+  /* scanner */
+  .chip-filter { display: inline-block; padding: 4px 11px; margin: 0 6px 6px 0; border-radius: 99px; border: 1px solid var(--border); font-size: 12.5px; cursor: pointer; color: var(--ink-2); background: var(--surface); }
+  .chip-filter.on { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+  .expr { font: 12.5px/1.5 ui-monospace, Menlo, monospace; background: var(--page); border: 1px solid var(--grid); border-radius: 6px; padding: 8px 10px; margin: 6px 0; overflow-x: auto; }
+  .expr.decoded { border-color: var(--accent); color: var(--ink); }
+  .unknown-id { color: var(--muted); font-style: italic; }
+  .device-row { background: color-mix(in oklab, var(--accent) 12%, var(--surface)); }
+  details summary { cursor: pointer; color: var(--accent); font-size: 13px; margin: 8px 0; }
+  @media (max-width: 620px) { .stage { grid-template-columns: 1fr 52px; } .stage > :first-child { grid-column: 1/-1; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Tuning Garage <span id="ver" style="font-size:12px;font-weight:500;color:var(--muted)"></span></h1>
+    <div class="gitbar" id="gitbar"></div>
+  </header>
+  <nav id="nav"></nav>
+  <main id="main"><div class="empty">Loading…</div></main>
+</div>
+<div class="flash" id="flash"></div>
+
+<script>
+const $ = (s, el=document) => el.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const fmtSize = n => n > 1048576 ? (n/1048576).toFixed(1) + " MB" : n > 1024 ? (n/1024).toFixed(0) + " KB" : n + " B";
+const flash = msg => { const f = $("#flash"); f.textContent = msg; f.classList.add("show"); setTimeout(() => f.classList.remove("show"), 2600); };
+
+let STATE = null;
+let NO_SCROLL = new URLSearchParams(location.search).has("noscroll");
+let TAB = location.hash.slice(1) || "overview";
+let VEHICLE = null;
+
+const TABS = [
+  ["garage", "Garage"], ["overview", "Overview"], ["tunes", "Tunes"], ["datalogs", "Datalogs"],
+  ["sessions", "Sessions"], ["progression", "Progression"], ["usermath", "User Math"],
+  ["timeline", "Timeline"], ["scanner", "Scanner"], ["library", "Library"], ["platforms", "Platforms"],
+];
+
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  const isJson = (r.headers.get("content-type") || "").includes("json");
+  const data = isJson ? await r.json() : await r.text();
+  if (!r.ok) throw new Error(data.error || r.statusText);
+  return data;
+}
+
+async function load() {
+  TIMELINE = null;   // anything that changed the repo may have changed the history
+  STATE = await api("/api/state");
+  if (!VEHICLE || !STATE.vehicles.find(v => v.id === VEHICLE)) VEHICLE = STATE.vehicles[0]?.id;
+  render();
+}
+
+function vh() { return STATE.vehicles.find(v => v.id === VEHICLE); }
+
+function render() {
+  $("#ver").textContent = STATE.version ? "v" + STATE.version : "";
+  const g = STATE.git;
+  $("#gitbar").innerHTML = `
+    <span class="dot ${g.dirty || g.behind ? "dirty" : ""}"></span>
+    <span>${g.dirty ? g.dirty + " uncommitted change" + (g.dirty>1?"s":"") : "clean"}${g.ahead ? " · " + g.ahead + " to push" : ""}${g.behind ? ` · <b style="color:var(--warn)">⇣ ${g.behind} behind GitHub</b>` : ""}</span>
+    <button class="btn" onclick="syncRepo()" title="Fetch + pull from GitHub">Sync</button>
+    ${g.dirty || g.ahead ? `<button class="btn" onclick="commitPush()">Commit &amp; push</button>` : ""}`;
+  if (g.behind && !window._warnedBehind) {
+    window._warnedBehind = true;
+    flash(`⚠ This machine is ${g.behind} commit(s) behind GitHub — hit Sync before working, or you'll fork your history.`);
+  }
+
+  $("#nav").innerHTML = TABS.map(([id, name]) =>
+    `<button class="${TAB===id?"on":""}" onclick="TAB='${id}';location.hash='${id}';render()">${name}</button>`).join("");
+
+  const views = { garage, overview, tunes, datalogs, sessions, progression, usermath, timeline, scanner, library, platforms };
+  $("#main").innerHTML = views[TAB] ? views[TAB]() : overview();
+}
+
+// Always shown, even with one vehicle — otherwise the app looks single-car
+// and nobody discovers that a second one is a click away.
+function vehicleSelect() {
+  const many = STATE.vehicles.length > 1;
+  return `<div style="margin-bottom:12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+    <label style="margin:0">Vehicle</label>
+    <select style="width:auto" onchange="VEHICLE=this.value;TIMELINE=null;render()">
+      ${STATE.vehicles.map(v => `<option ${v.id === VEHICLE ? "selected" : ""}>${esc(v.id)}</option>`).join("")}
+    </select>
+    <span class="note">${many ? `${STATE.vehicles.length} vehicles — ` : ""}<a href="#garage" onclick="TAB='garage';location.hash='garage';render();return false">manage the garage</a></span>
+  </div>`;
+}
+
+function dl(pathRel, label) {
+  return `<a href="/api/file?path=${encodeURIComponent(pathRel)}&dl=1">${esc(label || "download")}</a>`;
+}
+
+function stockFormats(v) {
+  return {
+    bin: v.stock.some(f => f.name.endsWith(".bin")),
+    hpt: v.stock.some(f => /\.hpt$/i.test(f.name)),
+  };
+}
+
+// Baseline = BOTH formats on a PCMHammer-supported PCM: raw .bin + HPT base .hpt
+function stockStatus(v) {
+  const { bin, hpt } = stockFormats(v);
+  if (bin && hpt) return "🟢 archived (.bin + .hpt)";
+  if (bin) return "🟡 .bin archived — HPT base .hpt still missing";
+  if (hpt) return "🟡 .hpt archived — PCMHammer .bin still missing";
+  return "⚠️ not archived — first task";
+}
+
+// ---------- Garage: every vehicle, and the way to add one ----------
+function garage() {
+  const rowOf = (profile, label) => (profile.match(new RegExp(`^\\| ${label} \\| (.*?) \\|$`, "m"))?.[1] || "").trim();
+  const clean = v => (!v || /fill in|optional|verify against/i.test(v) ? "" : v.replace(/\*\*/g, ""));
+
+  return `
+  <div class="card"><h2>Garage — ${STATE.vehicles.length} vehicle${STATE.vehicles.length === 1 ? "" : "s"}</h2>
+    <div class="note">Everything else in the app works on the vehicle selected here. Each one gets its own baseline, revisions, datalogs, sessions, flash log and history.</div>
+  </div>
+
+  <div class="grid2">
+    ${STATE.vehicles.map(v => {
+      const active = v.id === VEHICLE;
+      const revs = v.tunes.filter(f => /^v\d{3}/.test(f.name)).length;
+      const engine = clean(rowOf(v.profile, "Engine"));
+      const trans = clean(rowOf(v.profile, "Transmission"));
+      const pcm = clean(rowOf(v.profile, "PCM")) || clean(rowOf(v.profile, "PCM / ECU"));
+      return `<div class="card" style="margin:0;${active ? "border-color:var(--accent)" : ""}">
+        <div class="mathhead"><b style="font-size:16px">${esc(v.id)}</b>
+          ${active ? `<span class="badge verified">selected</span>` : ""}</div>
+        <div class="note">${[engine, trans, pcm].filter(Boolean).map(esc).join(" · ") || "profile not filled in yet"}</div>
+        <table style="margin-top:8px">
+          <tr><td>Baseline</td><td>${stockStatus(v)}</td></tr>
+          <tr><td>Currently flashed</td><td>${v.currentRevision ? esc(v.currentRevision) : `<span class="note">none recorded</span>`}</td></tr>
+          <tr><td>Revisions</td><td class="num">${revs}</td></tr>
+          <tr><td>Datalogs</td><td class="num">${v.datalogs.length}</td></tr>
+          <tr><td>Sessions</td><td class="num">${v.sessions.length}</td></tr>
+        </table>
+        <div class="actions">
+          ${active ? `<button class="btn" onclick="TAB='overview';location.hash='overview';render()">Open overview</button>`
+                   : `<button class="btn primary" onclick="VEHICLE='${esc(v.id)}';TIMELINE=null;TAB='overview';location.hash='overview';render()">Work on this vehicle</button>`}
+        </div>
+      </div>`;
+    }).join("")}
+  </div>
+
+  <div class="card"><h2>Add a vehicle</h2>
+    <form onsubmit="return addVehicle(event)">
+      <div class="row">
+        <div><label>Folder name</label><input name="id" placeholder="2004-silverado-lm7" required></div>
+        <div><label>Year</label><input name="year" placeholder="2004"></div>
+        <div><label>Make</label><input name="make" placeholder="Chevrolet"></div>
+        <div><label>Model</label><input name="model" placeholder="Silverado 1500"></div>
+      </div>
+      <div class="row">
+        <div><label>Engine</label><input name="engine" placeholder="5.3L LM7"></div>
+        <div><label>Transmission</label><input name="transmission" placeholder="4L60E"></div>
+        <div><label>PCM / ECU</label><input name="pcm" placeholder="P59"></div>
+        <div><label>VIN</label><input name="vin" placeholder="optional"></div>
+      </div>
+      <label>Notes</label><input name="notes" placeholder="what this vehicle is for, known issues">
+      <div class="actions"><button class="btn primary">Create vehicle</button></div>
+      <div class="note">Creates the folder structure, a profile from <code>templates/vehicle-profile.md</code>, and an empty tune changelog. First job afterwards is archiving its stock read.</div>
+    </form>
+  </div>`;
+}
+
+// The profile is the vehicle's identity — it should be editable where you read it.
+function profileEditor(v) {
+  const rows = [...(v.profile || "").matchAll(/^\| (.+?) \| (.*?) \|$/gm)]
+    .filter(m => !/^-+$/.test(m[1]) && m[1] !== "Field");
+  if (!rows.length) return "";
+  return `<div class="card"><h2>Vehicle profile — ${esc(v.id)}</h2>
+    <table><tr><th style="width:34%">Field</th><th>Value</th><th></th></tr>
+      ${rows.map(([, field, value]) => `<tr>
+        <td>${esc(field)}</td>
+        <td><input id="pf-${esc(slugId(field))}" value="${esc(value)}" style="font-size:13px"></td>
+        <td><button class="ghost" onclick="saveProfileField('${esc(field).replace(/'/g, "\\'")}','pf-${esc(slugId(field))}')">save</button></td>
+      </tr>`).join("")}
+    </table>
+    <div class="note">Writes straight to <code>vehicles/${esc(v.id)}/vehicle.md</code>. Values read out of a bin are drafts until you confirm them against the car.</div>
+  </div>`;
+}
+
+const slugId = s => String(s).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+
+async function saveProfileField(field, inputId) {
+  try {
+    await api("/api/vehicle-field", { method: "POST", body: JSON.stringify({
+      vehicle: VEHICLE, field, value: document.getElementById(inputId).value,
+    })});
+    flash(`${field} saved`);
+    await load();
+  } catch (e) { flash("Could not save: " + e.message); }
+}
+
+async function addVehicle(e) {
+  e.preventDefault();
+  const f = e.target, body = {};
+  for (const k of ["id", "year", "make", "model", "engine", "transmission", "pcm", "vin", "notes"]) body[k] = f[k].value;
+  try {
+    const r = await api("/api/vehicle", { method: "POST", body: JSON.stringify(body) });
+    flash(`${r.title} added — ${r.next}`);
+    VEHICLE = r.id; TIMELINE = null;
+    await load();
+  } catch (err) { flash(err.message); }
+  return false;
+}
+
+// ---------- Overview ----------
+function overview() {
+  const v = vh();
+  if (!v) return `<div class="card"><div class="empty">No vehicles yet — <a href="#garage" onclick="TAB='garage';location.hash='garage';render();return false">add one in the Garage</a>.</div></div>`;
+  const currentRev = v.tunes[0]?.name.match(/^v\d{3}/)?.[0] || "— (stock)";
+  const p = STATE.progression;
+  const started = p.stages.flatMap(s => s.concepts).filter(c => c.status !== "⬜").length;
+  const total = p.stages.flatMap(s => s.concepts).length;
+  return `
+  ${vehicleSelect()}
+  <div class="grid2">
+    <div class="card"><h2>Vehicle</h2>
+      <b>${esc(v.id)}</b>
+      <table style="margin-top:8px">
+        <tr><td>Stock read</td><td>${stockStatus(v)}</td></tr>
+        <tr><td><b>Currently flashed</b></td><td>${v.currentRevision
+          ? `<b>${esc(v.currentRevision)}</b>`
+          : `<span style="color:var(--muted)">none recorded — use “Mark as flashed” after a write</span>`}</td></tr>
+        <tr><td>Latest revision on disk</td><td>${esc(currentRev)}${
+          v.currentRevision && currentRev !== "— (stock)" && !v.currentRevision.startsWith(currentRev)
+            ? ` <b style="color:var(--warn)">⚠ newer than what's in the car</b>` : ""}</td></tr>
+        <tr><td>Sessions</td><td class="num">${v.sessions.length}</td></tr>
+        <tr><td>Datalogs</td><td class="num">${v.datalogs.length}</td></tr>
+      </table>
+    </div>
+    <div class="card"><h2>Learning</h2>
+      ${p.stages.map(s => {
+        const done = s.concepts.filter(c => c.status === "🟢").length;
+        const startd = s.concepts.filter(c => c.status !== "⬜").length;
+        const pctv = s.concepts.length ? Math.round(100 * (done + 0.5 * (startd - done)) / s.concepts.length) : 0;
+        return `<div class="stage"><span style="font-size:13px;color:var(--ink-2)">${s.num} · ${esc(s.name)}</span>
+          <div class="bar"><span style="width:${pctv}%"></span></div>
+          <span class="pct">${done}/${s.concepts.length}</span></div>`;
+      }).join("")}
+      <div class="note">${started}/${total} concepts started · bar = 🟢 done + half-credit for 🟡</div>
+    </div>
+  </div>
+  <div class="card"><h2>Milestones</h2>
+    ${p.milestones.map(m => `<div style="padding:4px 0">
+      <span class="chip" onclick="toggleMilestone('${esc(m.text).replace(/'/g,"\\'")}',${!m.done})">${m.done?"✅":"☐"}</span>
+      <span style="color:${m.done?"var(--good)":"var(--ink-2)"}"> ${esc(m.text)}</span></div>`).join("")}
+  </div>
+  ${profileEditor(v)}
+
+  <div class="card"><h2>Recent sessions — ${esc(v.id)}</h2>
+    ${v.sessions.length ? v.sessions.slice(0,5).map(s =>
+      `<div style="padding:5px 0;border-top:1px solid var(--grid)"><a href="#" onclick="viewFile('vehicles/${v.id}/sessions/${esc(s.name)}');return false">${esc(s.name)}</a></div>`).join("")
+      : `<div class="empty">No sessions yet — log one from the Sessions tab.</div>`}
+  </div>`;
+}
+
+// ---------- Tunes ----------
+function tunes() {
+  const v = vh();
+  return `${vehicleSelect()}
+  <div class="card"><h2>Stock read — the sacred baseline</h2>
+    <div style="margin-bottom:8px">
+      <span class="badge ${stockFormats(v).bin ? "verified" : "unverified"}">PCMHammer .bin ${stockFormats(v).bin ? "✓" : "missing"}</span>
+      <span class="badge ${stockFormats(v).hpt ? "verified" : "unverified"}">HP Tuners .hpt ${stockFormats(v).hpt ? "✓" : "missing"}</span>
+    </div>
+    ${v.stock.length
+      ? `<table><tr><th>File</th><th>Size</th><th>SHA-256</th><th></th></tr>${v.stock.map(f =>
+          `<tr><td>${esc(f.name)}${v.currentRevision.startsWith("stock") ? ` <span class="badge verified">in the car</span>` : ""}</td><td class="num">${fmtSize(f.size)}</td><td><span class="hash" title="${f.sha256 || ""}">${(f.sha256 || "").slice(0,12)}</span></td><td>${dl(`vehicles/${v.id}/tunes/stock/${f.name}`)}${binLink(`vehicles/${v.id}/tunes/stock/${f.name}`)} · <a href="#" onclick="startFlash('stock','${esc(f.name)}');return false">mark as flashed</a></td></tr>`).join("")}</table>
+         <div class="note">Stock files are never modified or overwritten — every tune starts from a copy.</div>`
+      : `<div class="empty">Not archived yet. This comes first. On a PCMHammer-supported PCM (your P01 is), archive BOTH: a FULL PCMHammer read (.bin ≈ 512 KB) and an HP Tuners base read (.hpt).</div>`}
+    <details ${stockFormats(v).bin && stockFormats(v).hpt ? "" : "open"}><summary>Upload stock read</summary>
+      <form onsubmit="return uploadFile(event,'stock')">
+        <div class="row">
+          <div><label>File</label><input type="file" name="file" required></div>
+          <div><label>Source</label><select name="desc">
+            <option value="full-read">PCMHammer full read (.bin)</option>
+            <option value="hpt-base">HP Tuners base (.hpt)</option>
+          </select></div>
+          <div><label>Read date</label><input type="date" name="date" value="${new Date().toISOString().slice(0,10)}"></div>
+        </div>
+        <div class="actions"><button class="btn primary">Upload to tunes/stock/</button></div>
+      </form>
+    </details>
+  </div>
+
+  <div class="card"><h2>Tune revisions</h2>
+    ${v.tunes.length
+      ? `<table><tr><th>File</th><th>Size</th><th>Modified</th><th>SHA-256</th><th></th></tr>${v.tunes.map(f => {
+          const rev = f.name.match(/^v\d{3}/)?.[0];
+          const isFlashed = rev && v.currentRevision.startsWith(rev);
+          return `<tr><td>${esc(f.name)}${isFlashed ? ` <span class="badge verified">in the car</span>` : ""}</td><td class="num">${fmtSize(f.size)}</td><td class="num">${f.mtime.slice(0,10)}</td><td><span class="hash" title="${f.sha256 || ""}">${(f.sha256 || "").slice(0,12)}</span></td><td>${dl(`vehicles/${v.id}/tunes/${f.name}`)}${binLink(`vehicles/${v.id}/tunes/${f.name}`)}${rev ? ` · <a href="#" onclick="startFlash('${rev}');return false">mark as flashed</a>` : ""}</td></tr>`;
+        }).join("")}</table>`
+      : `<div class="empty">No revisions yet.</div>`}
+    <details><summary>Check in a new revision</summary>
+      <form onsubmit="return uploadTune(event)">
+        <div class="row">
+          <div><label>File</label><input type="file" name="file" required></div>
+          <div><label>Short description (goes in filename)</label><input name="desc" placeholder="maf-cal-pass1" required></div>
+          <div><label>Check in as</label><select name="rev">
+            <option value="">next revision (new)</option>
+            ${[...new Set(v.tunes.map(f => f.name.match(/^v\d{3}/)?.[0]).filter(Boolean))].map(r =>
+              `<option value="${r}">${r} — attach other format (.bin/.hpt pair)</option>`).join("")}
+          </select></div>
+        </div>
+        <div class="row">
+          <div><label>Base (stock or vNNN)</label><input name="base" placeholder="stock"></div>
+          <div><label>Title for changelog</label><input name="title" placeholder="First MAF correction"></div>
+        </div>
+        <label>What changed (tables, ranges, before → after)</label><textarea name="changed"></textarea>
+        <label>Why (what the datalog showed)</label><textarea name="why"></textarea>
+        <div class="actions"><button class="btn primary">Check in (next vNNN + changelog entry)</button></div>
+      </form>
+    </details>
+  </div>
+
+  ${binPaths(v).length >= 2 ? `<div class="card"><h2>Compare two bins</h2>
+    <div class="row">
+      <div><label>A (base)</label><select id="cmpA">${binPaths(v).map(p => `<option value="${esc(p)}">${esc(p.split("/").pop())}</option>`).join("")}</select></div>
+      <div><label>B (compare)</label><select id="cmpB">${binPaths(v).map((p,i) => `<option value="${esc(p)}" ${i===1?"selected":""}>${esc(p.split("/").pop())}</option>`).join("")}</select></div>
+    </div>
+    <div class="actions"><button class="btn primary" onclick="compareBins()">Compare</button></div>
+    <div id="compareout"></div>
+  </div>` : ""}
+
+  <div class="card" id="flashcard" style="display:none"><h2>Pre-flash checklist</h2><div id="flashpanel"></div></div>
+
+  ${v.flashLog ? `<div class="card"><h2>Flash log</h2><pre class="md">${esc(v.flashLog)}</pre></div>` : ""}
+
+  <div class="card" id="analysiscard" style="display:none"><h2>Bin analysis</h2><div id="analysis"></div></div>
+
+  <div class="card"><h2>Changelog</h2><pre class="md">${esc(v.changelog)}</pre></div>`;
+}
+
+function binLink(rel) {
+  return rel.toLowerCase().endsWith(".bin")
+    ? ` · <a href="#" onclick="analyzeBin('${esc(rel)}');return false">analyze</a>` : "";
+}
+
+// Does this bin's VIN agree with the vehicle profile? A donor bin once passed
+// as a baseline because nobody compared them.
+function vinRowNote(vin, profileText) {
+  const row = (profileText.match(/^\| VIN \| (.*?) \|$/m)?.[1] || "").trim();
+  const known = /^[A-HJ-NPR-Z0-9]{17}$/i.test(row);
+  if (!known) return ` — <a href="#" onclick="setVin('${esc(vin)}');return false">set as this vehicle's VIN</a> <span class="note">(confirm it's this car first)</span>`;
+  if (row.toUpperCase() === vin.toUpperCase()) return ` <b style="color:var(--good)">✅ matches profile</b>`;
+  return ` <b style="color:#d03b3b">⚠ DOES NOT MATCH profile VIN ${esc(row)} — wrong vehicle?</b>`;
+}
+
+async function setVin(vin) {
+  if (!confirm(`Set ${vin} as this vehicle's VIN?\n\nOnly do this if you're certain the file came from this car.`)) return;
+  await api("/api/vehicle-field", { method: "POST", body: JSON.stringify({ vehicle: VEHICLE, field: "VIN", value: vin }) });
+  flash("VIN set on vehicle profile");
+  await load();
+}
+
+// --- pre-flash checklist gate ---
+// The template drives this; the server re-checks completeness on submit.
+let CHECKLIST = null;
+
+async function startFlash(rev, fileLabel) {
+  if (!CHECKLIST) CHECKLIST = (await api("/api/checklist")).sections;
+  const card = $("#flashcard");
+  card.style.display = "";
+  const prefill = fileLabel ? `wrote back ${fileLabel}` : "";
+  $("#flashpanel").innerHTML = `
+    <div class="note" style="margin-bottom:10px">Recording <b>${esc(rev)}</b>${fileLabel ? ` (<code>${esc(fileLabel)}</code>)` : ""} as flashed. Every box has to be ticked — the server rejects an incomplete list, so this is a real gate, not a formality.</div>
+    ${CHECKLIST.map(s => `<h3>${esc(s.section)}</h3>${s.items.map(i =>
+      `<div style="padding:4px 0"><label style="display:flex;gap:9px;align-items:flex-start;font-size:13.5px;color:var(--ink-2);font-weight:400;margin:0;cursor:pointer">
+        <input type="checkbox" class="ckitem" value="${esc(i.id)}" onchange="updateFlashCount()" style="width:auto;margin-top:3px">
+        <span>${esc(i.label)}</span></label></div>`).join("")}`).join("")}
+    <div class="row" style="margin-top:14px">
+      <div><label>Date flashed</label><input type="date" id="flashdate" value="${new Date().toISOString().slice(0,10)}"></div>
+      <div><label>Adapter used</label><input id="flashadapter" value="your proven write interface"></div>
+      <div><label>Notes (optional)</label><input id="flashnotes" value="${esc(prefill)}" placeholder="cal-only write, bench"></div>
+    </div>
+    <div class="actions">
+      <button class="btn primary" id="flashconfirm" disabled onclick="confirmFlash('${esc(rev)}')">Record flash</button>
+      <span id="flashcount" class="note"></span>
+      <button class="btn" onclick="document.getElementById('flashcard').style.display='none'">Cancel</button>
+    </div>`;
+  updateFlashCount();
+  if (!NO_SCROLL) card.scrollIntoView({ behavior: "smooth" });
+}
+
+function updateFlashCount() {
+  const boxes = [...document.querySelectorAll(".ckitem")];
+  const done = boxes.filter(b => b.checked).length;
+  $("#flashcount").textContent = `${done} of ${boxes.length} checked`;
+  $("#flashconfirm").disabled = done !== boxes.length;
+}
+
+async function confirmFlash(rev) {
+  const checked = [...document.querySelectorAll(".ckitem")].filter(b => b.checked).map(b => b.value);
+  try {
+    const r = await api("/api/flashed", { method: "POST", body: JSON.stringify({
+      vehicle: VEHICLE, rev, checked,
+      date: $("#flashdate").value, adapter: $("#flashadapter").value, notes: $("#flashnotes").value,
+    })});
+    flash(`${rev} recorded as flashed ${r.date}${r.milestoneChecked ? " 🏁 first-flash milestone checked!" : ""}`);
+    $("#flashcard").style.display = "none";
+    await load();
+  } catch (err) { flash("Not recorded: " + err.message); }
+}
+
+function binPaths(v) {
+  return [
+    ...v.stock.filter(f => f.name.toLowerCase().endsWith(".bin")).map(f => `vehicles/${v.id}/tunes/stock/${f.name}`),
+    ...v.tunes.filter(f => f.name.toLowerCase().endsWith(".bin")).map(f => `vehicles/${v.id}/tunes/${f.name}`),
+  ];
+}
+
+async function compareBins() {
+  const a = $("#cmpA").value, b = $("#cmpB").value;
+  const out = $("#compareout");
+  if (a === b) { out.innerHTML = `<div class="empty">Pick two different files.</div>`; return; }
+  const r = await api(`/api/compare?a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}`);
+  if (!r.comparable) { out.innerHTML = `<div class="empty">${esc(r.reason)}</div>`; return; }
+  if (r.identical) { out.innerHTML = `<div class="note" style="margin-top:10px">✅ Files are byte-identical (SHA ${r.a.sha256.slice(0,12)}).</div>`; return; }
+  out.innerHTML = `
+    <div class="note" style="margin-top:10px">${esc(r.a.file.split("/").pop())} → ${esc(r.b.file.split("/").pop())}
+      · <b>${r.totalBytesChanged.toLocaleString()} byte(s) differ</b>
+      ${r.sizeMismatch ? ` · <b style="color:var(--warn)">⚠ different sizes (${r.a.size} vs ${r.b.size}) — not the same PCM family?</b>` : ""}
+      ${r.a.osId !== r.b.osId ? ` · <b style="color:var(--warn)">⚠ different OS (${r.a.osId} vs ${r.b.osId})</b>` : ""}</div>
+    ${r.regions ? `<table style="margin-top:8px"><tr><th>Region</th><th>Bytes changed</th><th>Cal ID</th></tr>
+      ${r.regions.map(g => `<tr ${g.bytesChanged ? "" : `style="opacity:.55"`}><td>${esc(g.name)}</td><td class="num">${g.bytesChanged.toLocaleString()}</td><td class="num">${g.calIdA !== undefined ? (g.calIdA === g.calIdB ? g.calIdA : `<b style="color:var(--warn)">${g.calIdA} → ${g.calIdB}</b>`) : ""}</td></tr>`).join("")}</table>` : ""}
+    ${tableDiffHtml(r.tableDiff)}`;
+}
+
+// One history from files that already carry dates. Fixed hue order per type,
+// never cycled; flash events get weight rather than a louder colour.
+const TL_TYPES = {
+  baseline: { color: "var(--accent)",  label: "Baseline" },
+  revision: { color: "#eb6834",        label: "Revision" },
+  datalog:  { color: "#1baf7a",        label: "Datalog"  },
+  session:  { color: "#eda100",        label: "Session"  },
+  flash:    { color: "#e87ba4",        label: "Flash"    },
+};
+
+let TIMELINE = null;
+function timeline() {
+  if (!TIMELINE || TIMELINE.vehicle !== VEHICLE) {
+    api(`/api/timeline?vehicle=${encodeURIComponent(VEHICLE)}`)
+      .then(t => { TIMELINE = t; render(); })
+      .catch(e => { $("#main").innerHTML = `<div class="card">Timeline failed to load: ${esc(e.message)}</div>`; });
+    return `<div class="card"><div class="note">Loading history…</div></div>`;
+  }
+  const { events, insights: ins } = TIMELINE;
+  const c = ins.counts;
+
+  const gaps = [];
+  if (ins.orphanLogRevs.length) gaps.push(`<b style="color:var(--warn)">⚠ Datalogs reference ${ins.orphanLogRevs.map(esc).join(", ")}, but no such revision is checked in.</b> Either the tune file was never saved here or the log was misnamed — the log can't be reproduced without it.`);
+  if (ins.revisionsNeverFlashed.length) gaps.push(`Never flashed: ${ins.revisionsNeverFlashed.map(esc).join(", ")} — built but never run in the car.`);
+  if (ins.revisionsWithoutLogs.length) gaps.push(`No datalog: ${ins.revisionsWithoutLogs.map(esc).join(", ")} — a change with no measurement behind it can't be judged.`);
+
+  return `${vehicleSelect()}
+  <div class="card"><h2>History — ${esc(VEHICLE)}</h2>
+    <div class="note" style="margin-bottom:10px">
+      ${Object.entries(TL_TYPES).map(([k, t]) =>
+        `<span style="margin-right:14px"><span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${t.color};vertical-align:middle"></span>
+         ${t.label} <b>${c[k] || 0}</b></span>`).join("")}
+    </div>
+    ${events.length ? `<div class="tl">${events.map(e => {
+      const t = TL_TYPES[e.type] || { color: "var(--muted)" };
+      return `<div class="tl-ev ${e.type === "flash" ? "tl-flash" : ""}">
+        <span class="tl-dot" style="background:${t.color}"></span>
+        <div class="tl-date">${esc(e.date || "undated")}</div>
+        <div class="tl-title">${e.type === "flash" ? "🔧 " : ""}${esc(e.title)}${
+          e.rev && e.type === "datalog" ? ` <span class="note">against ${esc(e.rev)}</span>` : ""}</div>
+        <div class="tl-detail">${e.file
+          ? `<a href="#" onclick="viewTimelineDoc('${esc(e.file)}');return false">${esc(e.detail)}</a>`
+          : esc(e.detail)}</div>
+      </div>`;
+    }).join("")}</div>` : `<div class="empty">Nothing recorded yet. Archive a baseline, check in a revision, log a session — they all land here automatically.</div>`}
+    <div id="tldoc"></div>
+  </div>
+
+  ${gaps.length ? `<div class="card"><h2>Gaps worth noticing</h2>
+    ${gaps.map(g => `<div class="note" style="padding:4px 0">${g}</div>`).join("")}
+    <div class="note" style="margin-top:8px">Nothing else in the app shows these — they only appear when the whole history is in one place.</div>
+  </div>` : (events.length ? `<div class="card"><div class="note">✅ No gaps: every revision has been flashed and logged, and every datalog points at a revision that exists.</div></div>` : "")}`;
+}
+
+async function viewTimelineDoc(rel) {
+  const text = await (await fetch(`/api/file?path=${encodeURIComponent(rel)}`)).text();
+  $("#tldoc").innerHTML = `<h3 style="margin-top:14px">${esc(rel.split("/").pop())}</h3><pre class="md">${esc(text)}</pre>`;
+}
+
+// --- VCM Scanner configs ---------------------------------------------------
+// Channel lists are bare ParameterIDs; the dictionary built from the labelled
+// chart/graph/layout files is what makes them readable. Unknown stays unknown.
+let SCAN_PLATFORM = "all", SCAN_OPEN = null;
+
+const TYPE_LABEL = { channels: "Channel lists", charts: "Charts", graphs: "Graphs", layout: "Layouts", math: "Math Lab" };
+
+function unitLabel(code, unitCodes) {
+  if (!code) return "";
+  const u = unitCodes?.[code];
+  if (!u || !u.symbol || u.symbol === "?") return `<span class="note">unit ${esc(code)} <i>(meaning not established)</i></span>`;
+  return `${esc(u.symbol)} <span class="note">(code ${esc(code)}, inferred)</span>`;
+}
+
+function scanner() {
+  const s = STATE.scanner || { files: [], dictionary: {}, unitCodes: {}, platforms: [] };
+  const dictSize = Object.keys(s.dictionary).length;
+  const shown = s.files.filter(f => SCAN_PLATFORM === "all" || f.meta?.platform === SCAN_PLATFORM);
+  const byType = {};
+  for (const f of shown) (byType[f.type || "unknown"] ??= []).push(f);
+
+  const counts = Object.entries(TYPE_LABEL).map(([t, l]) =>
+    `<span style="margin-right:14px">${esc(l)} <b>${s.files.filter(f => f.type === t).length}</b></span>`).join("");
+
+  return `
+  <div class="card"><h2>VCM Scanner configurations</h2>
+    <div class="note" style="margin-bottom:8px">${counts}</div>
+    <div style="margin-bottom:6px">
+      ${["all", ...s.platforms].map(p =>
+        `<span class="chip-filter ${SCAN_PLATFORM === p ? "on" : ""}" onclick="SCAN_PLATFORM='${esc(p)}';render()">${p === "all" ? "All platforms" : esc(p)}</span>`).join("")}
+    </div>
+    <div class="note">Files are stored under their original names so they load straight back into VCM Scanner. Names come from a dictionary of <b>${dictSize}</b> parameter IDs built from your own charts, graphs and layouts — anything not charted shows as a raw ID rather than a guess.</div>
+  </div>
+
+  ${["channels", "layout", "charts", "graphs"].filter(t => byType[t]?.length).map(t => `
+    <div class="card"><h2>${esc(TYPE_LABEL[t])}</h2>
+      ${byType[t].map(f => scannerCard(f, s)).join("")}
+    </div>`).join("")}
+
+  ${byType.math?.length ? `<div class="card"><h2>Math Lab</h2>
+    <div class="note">${byType.math.length} parameter${byType.math.length === 1 ? "" : "s"} — these live on the
+      <a href="#usermath" onclick="TAB='usermath';location.hash='usermath';render();return false"><b>User Math</b></a>
+      tab alongside your hand-written formulas, where you can decode, document and export them.
+      The files themselves stay in <code>vcm-scanner/math/</code>: ${byType.math.map(f => esc(f.filename.replace(/\.MathParameter\.xml$/, ""))).join(", ")}.</div>
+  </div>` : ""}
+
+  <div class="card"><h2>Channel dictionary</h2>
+    <div class="note" style="margin-bottom:8px">${dictSize} parameter IDs — harvested from your labelled charts, graphs and layouts, plus any you add by hand below. Manual entries survive regeneration and take precedence.</div>
+
+    ${unknownIdsCard(s)}
+
+    <details style="margin-bottom:10px"><summary>Add a name by hand</summary>
+      <div class="note">Faster than charting: read the name off VCM Scanner's parameter list and record it here.</div>
+      <form onsubmit="return addDictEntry(event)">
+        <div class="row">
+          <div><label>Parameter ID</label><input name="parameterID" placeholder="50030" required></div>
+          <div><label>Name as VCM Scanner shows it</label><input name="label" placeholder="Manifold Absolute Pressure" required></div>
+          <div><label>Unit code (optional)</label><input name="unitId" placeholder="91"></div>
+        </div>
+        <div class="actions"><button class="btn primary">Add to dictionary</button></div>
+      </form>
+    </details>
+
+    <input placeholder="filter by id or name…" oninput="filterDict(this.value)" style="max-width:320px">
+    <table style="margin-top:8px" id="dicttable"><tr><th>ID</th><th>Name</th><th>Units seen</th><th>Learned from</th></tr>
+      ${Object.values(s.dictionary).sort((a, b) => +a.parameterID - +b.parameterID).map(e =>
+        `<tr><td class="num">${esc(e.parameterID)}</td><td>${esc(e.label)}</td>
+          <td class="note">${(e.unitIds || []).map(u => unitLabel(u, s.unitCodes)).join(", ")}</td>
+          <td class="note">${(e.sources || []).map(x => esc(String(x).replace(/\.xml$/, ""))).join(", ") || "manual"}</td></tr>`).join("")}
+    </table>
+  </div>
+
+  <div class="card"><h2>Add a configuration</h2>
+    <form onsubmit="return uploadScanner(event)">
+      <div class="row">
+        <div><label>File (.xml exported from VCM Scanner)</label><input type="file" name="file" required></div>
+        <div><label>Platform</label><input name="platform" list="scanplat" placeholder="Gen 3 NA"><datalist id="scanplat">${s.platforms.map(p => `<option>${esc(p)}</option>`).join("")}</datalist></div>
+        <div><label>Notes</label><input name="notes" placeholder="what this setup is for"></div>
+      </div>
+      <div class="actions"><button class="btn primary">Upload</button></div>
+      <div class="note">Type is detected from the XML — channel list, chart, graph, layout or math parameter.</div>
+    </form>
+  </div>`;
+}
+
+function scannerCard(f, s) {
+  const rel = `vcm-scanner/${f.folder}/${f.filename}`;
+  const head = `<div class="mathhead"><b>${esc(f.filename.replace(/\.xml$/, ""))}</b>
+      ${f.meta?.platform ? `<span class="badge">${esc(f.meta.platform)}</span>` : ""}
+      ${f.meta?.vehicle ? `<span class="badge">${esc(f.meta.vehicle)}</span>` : ""}
+      <span style="flex:1"></span>${dl(rel, "download")}</div>
+    ${f.meta?.notes ? `<div class="note">${esc(f.meta.notes)}</div>` : ""}`;
+
+  if (f.error) return `<div class="mathcard">${head}<div class="note" style="color:var(--warn)">⚠ ${esc(f.error)}</div></div>`;
+
+  if (f.type === "channels") {
+    const rates = f.rateSummary.map(r => `${r.count} @ ${r.intervalMs} ms`).join(" · ");
+    return `<div class="mathcard">${head}
+      <div class="note"><b>${f.channelCount}</b> channels — ${esc(rates)}</div>
+      ${f.userDevices.length ? f.userDevices.map(d => `
+        <div class="note" style="margin-top:6px"><b style="color:var(--accent)">External device:</b>
+          ${esc(d.manufacturer)} ${esc(d.device)} on CAN bus ${esc(String(d.canBus))}
+          <span class="note">(parameter ${esc(d.parameterID)}, ${unitLabel(d.unitId, s.unitCodes)})</span></div>`).join("") : ""}
+      <details><summary>Show channels</summary><div id="chan-${esc(f.filename)}" class="note">Click “Decode channel list”.</div></details>
+      <div class="actions"><button class="btn" onclick="loadChannels('${esc(rel)}','chan-${esc(f.filename)}')">Decode channel list</button></div>
+    </div>`;
+  }
+
+  if (f.type === "math") {
+    return `<div class="mathcard">${head}
+      <div class="expr">${esc(f.expression)}</div>
+      <div class="note">Output: ${unitLabel(f.unitId, s.unitCodes)} · ${esc(String(f.decimals ?? "?"))} decimals ·
+        references ${f.uniqueParameterIDs.length} parameter${f.uniqueParameterIDs.length === 1 ? "" : "s"}</div>
+      <div class="actions">
+        <button class="btn" onclick="decodeMath('${esc(rel)}','math-${esc(f.filename)}')">Decode expression</button>
+        <button class="btn" onclick="importMath('${esc(rel)}')">Import to User Math</button>
+      </div>
+      <div id="math-${esc(f.filename)}"></div>
+    </div>`;
+  }
+
+  const items = f.type === "layout"
+    ? f.panes.flatMap(p => [...p.tables, ...p.series])
+    : f.type === "charts" ? f.charts.flatMap(c => c.series) : f.tables;
+  const summary = f.type === "layout" ? `${f.paneCount} panes · ${f.tableCount} tables · ${f.seriesCount} series`
+    : f.type === "charts" ? `${f.chartCount} charts · ${f.seriesCount} series` : `${f.tableCount} tables`;
+  return `<div class="mathcard">${head}
+    <div class="note">${esc(summary)}</div>
+    <details><summary>Show parameters</summary>
+      <table style="margin-top:6px"><tr><th>Label</th><th>ID</th><th>Unit</th></tr>
+        ${items.slice(0, 60).map(i => `<tr><td>${esc(i.label || "—")}</td><td class="num">${esc(i.parameterID || "")}</td><td class="note">${unitLabel(i.unitId, s.unitCodes)}</td></tr>`).join("")}
+      </table>
+    </details></div>`;
+}
+
+// Which unknown IDs would buy the most readability if named — counted across
+// the math expressions, since that's where an unknown ID hurts most.
+function unknownIdsCard(s) {
+  const counts = {};
+  for (const f of s.files.filter(f => f.type === "math")) {
+    for (const id of new Set(f.uniqueParameterIDs || [])) {
+      if (!s.dictionary[id]) counts[id] = (counts[id] || 0) + 1;
+    }
+  }
+  const ranked = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+  if (!ranked.length) return `<div class="note">✅ Every parameter referenced by your math expressions is named.</div>`;
+  return `<div class="note" style="margin-bottom:8px">
+    <b>Worth naming next</b> — unknown IDs ranked by how many of your math expressions reference them:
+    ${ranked.map(([id, n]) => `<span class="badge unverified" style="margin-right:6px">${esc(id)} — ${n} formula${n === 1 ? "" : "s"}</span>`).join("")}
+    <br>Naming ${esc(ranked[0][0])} alone would clarify ${ranked[0][1]} of your formulas.</div>`;
+}
+
+async function addDictEntry(e) {
+  e.preventDefault();
+  const f = e.target;
+  try {
+    await api("/api/scanner-dictionary", { method: "POST", body: JSON.stringify({
+      parameterID: f.parameterID.value, label: f.label.value, unitId: f.unitId.value,
+    })});
+    flash(`${f.parameterID.value} = ${f.label.value} added — expressions using it are now readable`);
+    f.reset();
+    await load();
+  } catch (err) { flash(err.message); }
+  return false;
+}
+
+async function loadChannels(rel, targetId) {
+  const r = await api(`/api/scanner-file?path=${encodeURIComponent(rel)}`);
+  const el = document.getElementById(targetId);
+  const known = r.decodedChannels.filter(c => c.known).length;
+  el.innerHTML = `<div class="note">${known} of ${r.channelCount} named by the dictionary.</div>
+    <table style="margin-top:6px"><tr><th>ID</th><th>Name</th><th>Interval</th></tr>
+      ${r.decodedChannels.map(c => `<tr${c.userDevice ? ` class="device-row"` : ""}>
+        <td class="num">${esc(c.parameterID || "—")}</td>
+        <td>${c.known ? esc(c.label) : `<span class="unknown-id">not in dictionary</span>`}${c.userDevice ? ` <b>${esc(c.userDevice.device)}</b>` : ""}</td>
+        <td class="num">${c.intervalMs != null ? c.intervalMs + " ms" : "—"}</td></tr>`).join("")}
+    </table>`;
+  el.closest("details").open = true;
+}
+
+async function decodeMath(rel, targetId) {
+  const r = await api(`/api/scanner-file?path=${encodeURIComponent(rel)}`);
+  document.getElementById(targetId).innerHTML = `
+    <div class="expr decoded">${esc(r.decoded.decoded)}</div>
+    ${r.decoded.unknown.length
+      ? `<div class="note">Parameter IDs not in the dictionary yet: ${r.decoded.unknown.map(esc).join(", ")} — chart them in VCM Scanner, or add them to <code>channel-dictionary.json</code>, and this expression gets more readable.</div>`
+      : `<div class="note">Every referenced parameter is known.</div>`}`;
+}
+
+async function importMath(rel) {
+  try {
+    const r = await api("/api/scanner-import-math", { method: "POST", body: JSON.stringify({ path: rel }) });
+    flash(`${r.name.trim()} added as unverified — document and verify it above`);
+    await load();
+  } catch (e) { flash(e.message); }
+}
+
+function filterDict(q) {
+  const term = q.toLowerCase();
+  for (const tr of document.querySelectorAll("#dicttable tr")) {
+    if (tr.querySelector("th")) continue;
+    tr.style.display = tr.innerText.toLowerCase().includes(term) ? "" : "none";
+  }
+}
+
+async function uploadScanner(e) {
+  e.preventDefault();
+  const f = e.target, file = f.file.files[0];
+  const qs = new URLSearchParams({ kind: "scanner", name: file.name, platform: f.platform.value, notes: f.notes.value });
+  try {
+    const r = await api(`/api/upload?${qs}`, { method: "POST", body: file });
+    flash(`Saved ${r.saved} (${r.type}${r.replaced ? ", replaced existing" : ""})`);
+    await load();
+  } catch (err) { flash("Upload failed: " + err.message); }
+  return false;
+}
+
+// Cross-vehicle resources: files that belong to no car.
+function library() {
+  const donors = STATE.donorFiles || [];
+  return `
+  <div class="card"><h2>Donor / practice files</h2>
+    <div class="note" style="margin:0 0 10px">Bins that are <b>not the baseline for any vehicle</b> — donor PCM reads, practice files, and anything uploaded to the wrong place. Nothing here is a baseline; vehicle baselines live only in <code>vehicles/&lt;vehicle&gt;/tunes/stock/</code>.</div>
+    ${donors.length
+      ? `<table><tr><th>File</th><th>Size</th><th>SHA-256</th><th></th></tr>${donors.filter(f => f.name !== "README.md").map(f =>
+          `<tr><td>${esc(f.name)}</td><td class="num">${fmtSize(f.size)}</td><td><span class="hash" title="${f.sha256 || ""}">${(f.sha256 || "").slice(0,12)}</span></td><td>${dl(`donor-files/${f.name}`)}${binLink(`donor-files/${f.name}`)}</td></tr>`).join("")}</table>
+         <div class="note"><a href="#" onclick="viewDoc('donor-files/README.md');return false">open the donor-files index (what each file is and why it's here)</a></div>`
+      : `<div class="empty">No donor files.</div>`}
+    <details><summary>Upload a donor / practice file</summary>
+      <form onsubmit="return uploadDonor(event)">
+        <div class="row">
+          <div><label>File</label><input type="file" name="file" required></div>
+          <div><label>Short description (becomes the filename)</label><input name="desc" placeholder="2003-silverado-donor-pcm" required></div>
+        </div>
+        <div class="actions"><button class="btn primary">Save to donor-files/</button></div>
+      </form>
+    </details>
+    <div id="docview"></div>
+  </div>
+
+  <div class="card"><h2>Definitions (XDF) library</h2>
+    ${STATE.definitions.length
+      ? STATE.definitions.map(d => `<h3>OS ${esc(d.osId)}</h3><table>${d.files.map(f =>
+          `<tr><td>${esc(f.name)}</td><td class="num">${fmtSize(f.size)}</td><td>${dl(`definitions/${d.osId}/${f.name}`)}${f.name.toLowerCase().endsWith(".xdf") ? ` · <a href="#" onclick="viewXdf('definitions/${d.osId}/${esc(f.name)}');return false"><b>browse tables</b></a>` : ""}</td></tr>`).join("")}</table>`).join("")
+      : `<div class="empty">No definitions yet. XDFs are OS-specific — sources: pcmhacking.net XDF threads, ls1tech Bin &amp; XDF repository, or generate one with UniversalPatcher.</div>`}
+    <details><summary>Upload a definition</summary>
+      <form onsubmit="return uploadDefinition(event)">
+        <div class="row">
+          <div><label>File (.xdf etc.)</label><input type="file" name="file" required></div>
+          <div><label>OS ID it belongs to</label><input name="osid" placeholder="<your OS ID>" required></div>
+        </div>
+        <div class="actions"><button class="btn primary">Save to definitions/&lt;OS&gt;/</button></div>
+      </form>
+    </details>
+  </div>
+
+  <div class="card"><h2>Reference &amp; FAQ</h2>
+    <div class="note" style="margin-bottom:8px">New here? Start with the
+      <a href="#" onclick="viewDoc('USER-GUIDE.md');return false"><b>User Guide</b></a> —
+      a full worked workflow with screenshots. Then the
+      <a href="#" onclick="viewDoc('DISCLAIMER.md');return false">disclaimer</a>.</div>
+    ${(STATE.docs || []).map(d =>
+      `<span style="display:inline-block;margin:0 14px 6px 0"><a href="#" onclick="viewDoc('${esc(d.path)}');return false">${esc(d.name)}</a></span>`).join("")
+      || `<div class="empty">No reference docs found.</div>`}
+    <div id="docview2"></div>
+  </div>`;
+}
+
+// Math Lab XML files live in vcm-scanner/math/ on disk (they're loadable
+// scanner artifacts) but this is their home in the UI.
+function scannerMathCard() {
+  const files = (STATE.scanner?.files || []).filter(f => f.type === "math");
+  const s = STATE.scanner || { unitCodes: {} };
+  return `<div class="card"><h2>VCM Scanner Math Lab files</h2>
+    <div class="note" style="margin-bottom:10px">Exported <code>.MathParameter.xml</code> files. Uploading one files it under <code>vcm-scanner/math/</code> so it stays loadable in the scanner, and creates an entry above at the same time.</div>
+    ${files.length ? files.map(f => {
+      const rel = `vcm-scanner/math/${f.filename}`;
+      return `<div class="mathcard">
+        <div class="mathhead"><b>${esc((f.name || f.filename).trim())}</b>
+          <span class="badge unverified">${f.uniqueParameterIDs.length} parameter${f.uniqueParameterIDs.length === 1 ? "" : "s"}</span>
+          <span style="flex:1"></span>${dl(rel, "download")}</div>
+        <div class="expr">${esc(f.expression)}</div>
+        <div class="note">Output: ${unitLabel(f.unitId, s.unitCodes)} · ${esc(String(f.decimals ?? "?"))} decimals</div>
+        <div class="actions">
+          <button class="btn" onclick="decodeMath('${esc(rel)}','umath-${esc(f.filename)}')">Decode expression</button>
+          <button class="btn" onclick="importMath('${esc(rel)}')">Add to the list above</button>
+        </div>
+        <div id="umath-${esc(f.filename)}"></div>
+      </div>`;
+    }).join("") : `<div class="empty">None yet.</div>`}
+    <details ${files.length ? "" : "open"}><summary>Upload a .MathParameter.xml</summary>
+      <form onsubmit="return uploadMathParam(event)">
+        <div class="row"><div><label>File exported from VCM Scanner's Math Lab</label><input type="file" name="file" accept=".xml" required></div></div>
+        <div class="actions"><button class="btn primary">Upload and add to User Math</button></div>
+        <div class="note">The expression is decoded against the channel dictionary and the entry arrives as <b>unverified</b> for you to document.</div>
+      </form>
+    </details>
+  </div>`;
+}
+
+async function uploadMathParam(e) {
+  e.preventDefault();
+  const f = e.target, file = f.file.files[0];
+  const qs = new URLSearchParams({ kind: "mathparam", name: file.name });
+  try {
+    const r = await api(`/api/upload?${qs}`, { method: "POST", body: file });
+    flash(`${r.name} ${r.replaced ? "updated" : "added"} — saved as ${r.saved}`);
+    await load();
+  } catch (err) { flash("Upload failed: " + err.message); }
+  return false;
+}
+
+async function uploadDonor(e) {
+  e.preventDefault();
+  const f = e.target, file = f.file.files[0];
+  const qs = new URLSearchParams({ kind: "donor", name: file.name, desc: f.desc.value });
+  try {
+    const r = await api(`/api/upload?${qs}`, { method: "POST", body: file });
+    flash(`Saved ${r.saved}${r.analysis ? ` — ${r.analysis.pcm || ""} OS ${r.analysis.osId || "?"}, ${r.analysis.checksumSummary}` : ""}`);
+    await load();
+  } catch (err) { flash("Upload failed: " + err.message); }
+  return false;
+}
+
+// Minimal markdown renderer. Everything is HTML-escaped FIRST, then inline
+// rules are applied to the already-escaped text — so a document containing
+// markup renders as visible text and can never inject HTML.
+function renderMarkdown(src, baseDir = "") {
+  const blocks = [];
+  const stash = html => `@@CODEBLOCK${blocks.push(html) - 1}@@`;
+
+  // fenced code first, so nothing inside it gets interpreted
+  let s = String(src).replace(/```[\w-]*\n([\s\S]*?)```/g, (_, code) =>
+    stash(`<pre class="md">${esc(code.replace(/\n$/, ""))}</pre>`));
+  s = esc(s);
+
+  const asset = p => `/api/file?path=${encodeURIComponent((baseDir ? baseDir + "/" : "") + p.replace(/^\.\//, ""))}`;
+  const inline = x => x
+    .replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (_, alt, src) =>
+      `<img src="${/^https?:/.test(src) ? src : asset(src)}" alt="${alt}" loading="lazy" class="mdimg">`)
+    .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_, txt, href) =>
+      /^https?:/.test(href)
+        ? `<a href="${href}" target="_blank" rel="noopener">${txt}</a>`
+        : `<a href="#" onclick="viewDoc('${(baseDir ? baseDir + "/" : "") + href.replace(/^\.\//, "")}');return false">${txt}</a>`)
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>")
+    .replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<i>$2</i>");
+
+  const out = [];
+  let list = null, inTable = false, para = false;
+  const closeList = () => { if (list) { para = false; out.push(`</${list}>`); list = null; } };
+  const closeTable = () => { if (inTable) { para = false; out.push("</table>"); inTable = false; } };
+
+  for (const raw of s.split("\n")) {
+    const line = raw.trimEnd();
+
+    if (/^@@CODEBLOCK\d+@@$/.test(line.trim())) { closeList(); closeTable(); out.push(line.trim()); continue; }
+
+    const h = line.match(/^(#{1,6})\s+(.*)$/);
+    if (h) {
+      closeList(); closeTable();
+      const n = Math.min(h[1].length + 1, 6);
+      out.push(`<h${n}>${inline(h[2])}</h${n}>`);
+      continue;
+    }
+    if (/^\s*(-\s*){3,}$/.test(line) || /^\s*(\*\s*){3,}$/.test(line)) {
+      closeList(); closeTable(); out.push("<hr>"); continue;
+    }
+    if (/^\s*\|.*\|\s*$/.test(line)) {
+      if (/^[\s|:\-]+$/.test(line)) continue;                     // separator row
+      const cells = line.trim().replace(/^\||\|$/g, "").split("|").map(c => c.trim());
+      if (!inTable) {
+        closeList(); inTable = true;
+        out.push("<table><tr>" + cells.map(c => `<th>${inline(c)}</th>`).join("") + "</tr>");
+      } else {
+        out.push("<tr>" + cells.map(c => `<td>${inline(c)}</td>`).join("") + "</tr>");
+      }
+      continue;
+    }
+    closeTable();
+
+    const li = line.match(/^\s*([-*+]|\d+\.)\s+(.*)$/);
+    if (li) {
+      const want = /\d/.test(li[1]) ? "ol" : "ul";
+      if (list !== want) { closeList(); list = want; out.push(`<${want}>`); }
+      const body = li[2].replace(/^\[([ x])\]\s*/, (_, c) => (c === "x" ? "✅ " : "☐ "));
+      out.push(`<li>${inline(body)}</li>`);
+      continue;
+    }
+    closeList();
+
+    if (/^\s*&gt;\s?/.test(line)) {
+      const body = inline(line.replace(/^\s*&gt;\s?/, ""));
+      const prev = out[out.length - 1] || "";
+      // consecutive quote lines belong to one block, not one block each
+      if (prev.startsWith("<blockquote>") && prev.endsWith("</blockquote>"))
+        out[out.length - 1] = prev.slice(0, -13) + (body.trim() ? " " + body : "<br>") + "</blockquote>";
+      else out.push(`<blockquote>${body}</blockquote>`);
+      continue;
+    }
+    if (!line.trim()) { para = false; continue; }
+    // markdown joins consecutive non-blank lines into one paragraph
+    if (para && out.length && out[out.length - 1].startsWith("<p>") && out[out.length - 1].endsWith("</p>"))
+      out[out.length - 1] = out[out.length - 1].slice(0, -4) + " " + inline(line) + "</p>";
+    else { out.push(`<p>${inline(line)}</p>`); para = true; }
+  }
+  closeList(); closeTable();
+  return out.join("\n").replace(/@@CODEBLOCK(\d+)@@/g, (_, i) => blocks[+i]);
+}
+
+async function viewDoc(rel) {
+  const text = await (await fetch(`/api/file?path=${encodeURIComponent(rel)}`)).text();
+  const target = rel.startsWith("reference/") || rel.endsWith(".md") ? ($("#docview2") || $("#docview")) : $("#docview");
+  const baseDir = rel.includes("/") ? rel.slice(0, rel.lastIndexOf("/")) : "";
+  target.innerHTML = `<div class="note" style="margin-top:12px">${esc(rel)}</div>
+    <div class="mdbody">${renderMarkdown(text, baseDir)}</div>`;
+  if (!NO_SCROLL) target.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+async function relocateToDonor(rel) {
+  const reason = prompt(`Move this file out of the vehicle and into donor-files/?\n\n${rel}\n\nReason (recorded in the donor index):`, "not this vehicle's file");
+  if (reason === null) return;
+  const r = await api("/api/relocate", { method: "POST", body: JSON.stringify({ from: rel, reason }) });
+  flash(`Moved to ${r.moved} — see the Library tab`);
+  $("#analysiscard").style.display = "none";
+  await load();
+}
+
+// Byte counts say something changed; the XDF says which table and by how much.
+function tableDiffHtml(td) {
+  if (!td) return `<div class="note">Byte-level only. Put an XDF for this OS in the definitions library and the compare will name the actual tables that changed.</div>`;
+  if (td.error) return `<div class="note" style="color:var(--warn)">⚠ ${esc(td.error)}</div>`;
+  if (!td.tablesChanged) return `<div class="note">Read through <code>${esc(td.xdf)}</code>: none of the ${td.tablesCompared} defined tables differ — the changed bytes are outside anything this definition maps.</div>`;
+  return `
+    <h3 style="margin-top:14px">Tables changed — read through ${esc(td.xdf.split("/").pop())}</h3>
+    <table><tr><th>Table</th><th>Cells</th><th>Avg Δ</th><th>Max Δ</th><th>Examples</th></tr>
+      ${td.changed.map(t => `<tr>
+        <td><b>${esc(t.title)}</b>${t.categories?.length ? `<div class="note">${esc(t.categories.join(" / "))}</div>` : ""}${t.layoutAmbiguous ? `<div class="note" style="color:var(--warn)">⚠ ambiguous row/col layout flag — verify orientation</div>` : ""}</td>
+        <td class="num">${t.changedCells} / ${t.totalCells}</td>
+        <td class="num">${t.avgDelta > 0 ? "+" : ""}${t.avgDelta}${esc(t.units || "")}</td>
+        <td class="num">${t.maxDelta > 0 ? "+" : ""}${t.maxDelta}${esc(t.units || "")}</td>
+        <td class="note">${t.examples.map(e => `${esc(String(e.y))}/${esc(String(e.x))}: ${e.from}→${e.to}`).join("<br>")}</td>
+      </tr>`).join("")}
+    </table>
+    <div class="note">${esc(td.note)}</div>`;
+}
+
+async function viewXdf(rel) {
+  const el = $("#docview2");
+  el.innerHTML = `<div class="note">Parsing…</div>`;
+  const r = await api(`/api/xdf?path=${encodeURIComponent(rel)}`);
+  if (!r.ok) { el.innerHTML = `<div class="empty">${esc(r.reason)}</div>`; return; }
+  const byCat = {};
+  for (const t of r.tables) (byCat[t.categories?.[0] || "Uncategorised"] ??= []).push(t);
+  el.innerHTML = `
+    <h3 style="margin-top:14px">${esc(r.title || rel.split("/").pop())}</h3>
+    <div class="note">${esc(r.description || "")} — <b>${r.tableCount}</b> tables, <b>${r.constantCount}</b> constants${r.baseOffset ? `, base offset 0x${r.baseOffset.toString(16)}` : ""}</div>
+    ${Object.entries(byCat).sort().map(([cat, ts]) => `
+      <h3>${esc(cat)} <span class="note">(${ts.length})</span></h3>
+      <table><tr><th>Table</th><th>Size</th><th>Address</th><th>Format</th><th>Units</th></tr>
+        ${ts.map(t => `<tr>
+          <td>${esc(t.title)}${t.layoutAmbiguous ? ` <span class="badge unverified">layout?</span>` : ""}</td>
+          <td class="num">${t.rows}×${t.cols}</td>
+          <td class="num">${t.address != null ? "0x" + t.address.toString(16).toUpperCase() : "—"}</td>
+          <td class="note">${t.bits}-bit ${t.signed ? "signed" : "unsigned"} ${t.lsbFirst ? "LSB" : "MSB"}</td>
+          <td class="note">${esc(t.units || "")}</td></tr>`).join("")}
+      </table>`).join("")}
+    <div class="note">Parsed read-only. To see actual values, compare two bins on the Tunes tab — this definition is used automatically when its OS matches.</div>`;
+}
+
+function platforms() {
+  return STATE.platforms.map(p => `<div class="card"><h2>${esc(p.name)}</h2>
+    <h3>PCMs</h3>
+    <table><tr><th>Model</th><th>Flash</th><th>Years</th><th>PCMHammer</th></tr>
+      ${p.pcms.map(m => `<tr><td>${esc(m.model)}</td><td>${esc(m.flash)}</td><td>${esc(m.years)}</td><td>${esc(m.pcmhammer)}</td></tr>`).join("")}</table>
+    <h3>Adapters</h3>
+    <table><tr><th>Device</th><th>Notes</th></tr>
+      ${p.adapters.map(a => `<tr><td>${esc(a.device)}</td><td>${esc(a.notes)}</td></tr>`).join("")}</table>
+    <h3>Links</h3>
+    ${p.links.map(l => `<div style="padding:2px 0"><a href="${esc(l.url)}" target="_blank" rel="noopener">${esc(l.name)}</a></div>`).join("")}
+    ${p.binFormat ? `<div class="note" style="margin-top:8px">Bin format: ${esc(p.binFormat.osIdOffset)} · ${esc(p.binFormat.checksums)}</div>` : ""}
+  </div>`).join("") || `<div class="empty">No platform metadata found in data/platforms/.</div>`;
+}
+
+async function analyzeBin(rel) {
+  const r = await api(`/api/analyze?path=${encodeURIComponent(rel)}`);
+  const card = $("#analysiscard");
+  card.style.display = "";
+  if (!r.analyzable) { $("#analysis").innerHTML = `<div class="empty">${esc(r.reason)}</div>`; return; }
+  const cs = c => c ? (c.ok ? "✅ OK" : `❌ FAIL (stored 0x${c.stored.toString(16).toUpperCase()}, calc 0x${c.calculated.toString(16).toUpperCase()})`) : "—";
+  const vprofile = vh().profile || "";
+  const osInProfile = vprofile.match(/^\| OS ID \| (.*?) \|$/m)?.[1]?.trim();
+  const osKnown = osInProfile && !/fill in/i.test(osInProfile);
+  $("#analysis").innerHTML = `
+    <div class="note" style="margin-bottom:8px">${esc(r.file)}</div>
+    <table>
+      <tr><td>PCM</td><td>${esc(r.model || r.pcm || "?")}</td></tr>
+      <tr><td>OS ID</td><td><b>${r.osId ?? "?"}</b>${r.osId && !osKnown ? ` — <a href="#" onclick="setOsId(${r.osId});return false">set on vehicle profile</a>` : ""}${r.osId && osKnown && String(r.osId) !== osInProfile ? ` — <b style="color:var(--warn)">⚠ vehicle.md says ${esc(osInProfile)}</b>` : ""}</td></tr>
+      <tr><td>OS checksum</td><td>${cs(r.osChecksum)}</td></tr>
+      ${(r.segments || []).map(s => `<tr><td>${esc(s.name)}</td><td>${s.error ? `❌ ${esc(s.error)}` : `cal ${s.calId} ${esc(s.version || "")} · checksum ${cs(s.checksum)}`}</td></tr>`).join("")}
+      ${r.eeprom ? `<tr><td>VIN (draft read)</td><td>${esc(r.eeprom.vin)}${vinRowNote(r.eeprom.vin, vprofile)} · serial ${esc(r.eeprom.serial)} · BCC ${esc(r.eeprom.broadcastCode)}</td></tr>` : ""}
+      <tr><td>SHA-256</td><td style="font-family:ui-monospace,Menlo,monospace;font-size:11px">${r.sha256}</td></tr>
+      ${r.osId ? `<tr><td>Definitions</td><td>${STATE.definitions.some(d => d.osId === String(r.osId))
+        ? `✅ XDF in library — <a href="#tunes">definitions/${r.osId}/</a>`
+        : `none for OS ${r.osId} yet — sources in <code>definitions/README.md</code>`}</td></tr>` : ""}
+      <tr><td>Verdict</td><td><b>${esc(r.checksumSummary || "")}</b></td></tr>
+    </table>
+    ${(r.warnings || []).map(w => `<div class="note" style="color:var(--warn)">⚠ ${esc(w)}</div>`).join("")}
+    ${r.file.startsWith("vehicles/") ? `<div class="actions"><button class="btn" onclick="relocateToDonor('${esc(r.file)}')">Not this vehicle's file → move to donor files</button></div>` : ""}
+    <div class="note">${esc(r.note || "")}</div>`;
+  if (!NO_SCROLL) card.scrollIntoView({ behavior: "smooth" });
+}
+
+async function setOsId(osId) {
+  await api("/api/vehicle-field", { method: "POST", body: JSON.stringify({ vehicle: VEHICLE, field: "OS ID", value: String(osId) + " (from bin analysis — verify)" }) });
+  flash("OS ID set on vehicle profile (marked for verification)");
+  await load();
+}
+
+async function uploadDefinition(e) {
+  e.preventDefault();
+  const f = e.target, file = f.file.files[0];
+  const qs = new URLSearchParams({ kind: "definition", name: file.name, osid: f.osid.value });
+  try {
+    const r = await api(`/api/upload?${qs}`, { method: "POST", body: file });
+    flash(`Saved ${r.saved}`);
+    await load();
+  } catch (err) { flash("Upload failed: " + err.message); }
+  return false;
+}
+
+// ---------- Datalogs ----------
+function datalogs() {
+  const v = vh();
+  const revs = ["v000 (stock)", ...v.tunes.map(f => f.name.match(/^v\d{3}/)?.[0]).filter(Boolean)];
+  return `${vehicleSelect()}
+  <div class="card"><h2>Datalogs — ${esc(v.id)}</h2>
+    ${v.datalogs.length
+      ? `<table><tr><th>File</th><th>Size</th><th></th></tr>${v.datalogs.map(f =>
+          `<tr><td>${esc(f.name)}</td><td class="num">${fmtSize(f.size)}</td><td>${dl(`vehicles/${v.id}/datalogs/${f.name}`)}${f.name.toLowerCase().endsWith(".csv") ? ` · <a href="#" onclick="logSummary('vehicles/${v.id}/datalogs/${esc(f.name)}');return false">summary</a> · <a href="#" onclick="logAnalysis('vehicles/${v.id}/datalogs/${esc(f.name)}');return false"><b>analyze trims</b></a>` : ""}</td></tr>`).join("")}</table>`
+      : `<div class="empty">No datalogs yet.</div>`}
+    <div id="logsum"></div>
+  </div>
+
+  <div class="card"><h2>Units</h2>
+    <div class="note" style="margin-bottom:8px">Applies to datalog values shown here. Stored in <code>data/preferences.json</code>, so both machines agree after a sync. Values read through an XDF keep the definition's own units — that's what TunerPro shows you.</div>
+    <div class="row">
+      ${Object.entries(STATE.quantities || {}).map(([q, def]) => `
+        <div><label>${esc(q)}</label>
+          <select onchange="setUnit('${esc(q)}', this.value)">
+            ${def.units.map(u => `<option ${STATE.preferences?.units?.[q] === u ? "selected" : ""}>${esc(u)}</option>`).join("")}
+          </select></div>`).join("")}
+    </div>
+    <div class="note">Conversions are always labelled with the unit the log actually recorded — nothing is silently reformatted.</div>
+    <h3>Upload a datalog</h3>
+    <form onsubmit="return uploadFile(event,'datalog')">
+      <div class="row">
+        <div><label>File (.hpl / .csv)</label><input type="file" name="file" required></div>
+        <div><label>Recorded against tune</label><select name="rev">${[...new Set(revs)].map(r => `<option value="${r.slice(0,4)}">${r}</option>`).join("")}</select></div>
+        <div><label>Conditions</label><input name="desc" placeholder="cruise-ltft" required></div>
+      </div>
+      <div class="actions"><button class="btn primary">Upload</button></div>
+    </form>
+    <div class="note">Filename records which revision the log ran against — that link is what makes a log useful later.
+      Upload both formats: <code>.hpl</code> for HPT, <code>.csv</code> for analysis here
+      (<a href="#" onclick="TAB='library';location.hash='library';render();setTimeout(()=>viewDoc('reference/vcm-scanner-csv-export.md'),50);return false">how to export CSV from VCM Scanner</a>).</div>
+  </div>`;
+}
+
+// ---------- Sessions ----------
+function sessions() {
+  const v = vh();
+  return `${vehicleSelect()}
+  <div class="card"><h2>Session logs — ${esc(v.id)}</h2>
+    ${v.sessions.length ? v.sessions.map(s =>
+      `<div style="padding:5px 0;border-top:1px solid var(--grid)"><a href="#" onclick="viewFile('vehicles/${v.id}/sessions/${esc(s.name)}');return false">${esc(s.name)}</a></div>`).join("")
+      : `<div class="empty">No sessions logged yet.</div>`}
+    <div id="fileview"></div>
+  </div>
+  <div class="card"><h2>Log a session</h2>
+    <form onsubmit="return saveSession(event)">
+      <div class="row">
+        <div><label>Date</label><input type="date" name="date" value="${new Date().toISOString().slice(0,10)}"></div>
+        <div><label>Tune revision flashed</label><input name="rev" placeholder="v001 or — (stock)"></div>
+        <div><label>Tools used</label><input name="tools" placeholder="HPT MPVI3 / PCMHammer + your proven write interface"></div>
+      </div>
+      <label>Goal for this session</label><input name="goal" required>
+      <label>Datalogs captured (filenames + conditions)</label><textarea name="datalogs"></textarea>
+      <label>Observations (numbers, not vibes — trim %, KR °, AFR)</label><textarea name="observations"></textarea>
+      <label>Changes made — one annotation per change: what you believed, what you changed, what you expect</label><textarea name="changes" placeholder="MAF 3000-4500 Hz -4% — trims showed +6% there; expect LTFT near 0 on next cruise log"></textarea>
+      <label>Result</label><textarea name="result"></textarea>
+      <label>Next steps</label><textarea name="next"></textarea>
+      <label>Concepts practiced (then bump them on the Progression tab)</label><input name="concepts">
+      <div class="actions"><button class="btn primary">Save session log</button></div>
+    </form>
+  </div>`;
+}
+
+// ---------- Progression ----------
+function progression() {
+  const p = STATE.progression;
+  return `<div class="note" style="margin-bottom:10px">Click a status to cycle ⬜ → 🟡 → 🟢. Only mark 🟢 when you'd trust yourself to do it unassisted. Click a note to edit.</div>
+  ${p.stages.map(s => `<div class="card"><h2>Stage ${s.num} — ${esc(s.name)}</h2>
+    <table><tr><th style="width:55%">Concept</th><th>Status</th><th>Notes / sessions</th></tr>
+    ${s.concepts.map(c => `<tr>
+      <td>${esc(c.concept)}</td>
+      <td><span class="chip" onclick="cycleStatus('${esc(c.concept).replace(/'/g,"\\'")}','${c.status}')">${c.status}</span></td>
+      <td><span class="ghost" style="cursor:pointer" onclick="editNote('${esc(c.concept).replace(/'/g,"\\'")}','${c.status}','${esc(c.notes).replace(/'/g,"\\'")}')">${esc(c.notes) || "<i style='color:var(--muted)'>add note</i>"}</span></td>
+    </tr>`).join("")}</table></div>`).join("")}`;
+}
+
+// ---------- User Math ----------
+function usermath() {
+  const params = STATE.userMath.parameters || [];
+  const cats = [...new Set(params.map(p => p.category))].sort();
+  return `
+  <div class="card"><h2>User math repository</h2>
+    <div class="note" style="margin:0 0 10px">Scanner math parameters (VCM Scanner user math, histogram formulas, spreadsheet calcs). Anything marked <span class="badge unverified">unverified</span> hasn't been proven against a real log yet — verify before trusting a tune decision to it.
+      <br><b>export .xml</b> writes a VCM Scanner Math Lab file. Entries marked ⚠ use channel <i>names</i> rather than <code>[ParameterID]</code> references, so the scanner won't accept them until you swap in the IDs.</div>
+    ${params.length === 0 ? `<div class="empty">Empty — add your first parameter below.</div>` : ""}
+    ${cats.map(cat => `<h3>${esc(cat)}</h3>` + params.filter(p => p.category === cat).map(p => `
+      <div class="mathcard">
+        <div class="mathhead"><b>${esc(p.name)}</b>
+          <span class="badge ${p.status==="verified"?"verified":"unverified"}">${esc(p.status)}</span>
+          ${p.units ? `<span class="badge">${esc(p.units)}</span>` : ""}
+          <span style="flex:1"></span>
+          <button class="ghost" onclick="copyExpr(this,'${esc(p.expression).replace(/'/g,"\\'")}')">copy</button>
+          <button class="ghost" onclick="editMath('${p.id}')">edit</button>
+          <a class="ghost" href="/api/usermath-export?id=${encodeURIComponent(p.id)}" style="text-decoration:none"
+             title="${/\[\d+/.test(p.expression || "") ? "Download as a VCM Scanner Math Lab parameter" : "Downloads, but the expression uses channel names — VCM Scanner needs [ParameterID] references before it will accept it"}">export .xml${/\[\d+/.test(p.expression || "") ? "" : " ⚠"}</a>
+          <button class="ghost danger" onclick="delMath('${p.id}','${esc(p.name).replace(/'/g,"\\'")}')">delete</button>
+        </div>
+        <div class="expr">${esc(p.expression)}</div>
+        ${p.inputs ? `<div class="note">Inputs: ${esc(p.inputs)}</div>` : ""}
+        ${p.notes ? `<div class="note">${esc(p.notes)}</div>` : ""}
+        ${p.source ? `<div class="note">Source: ${esc(p.source)}</div>` : ""}
+      </div>`).join("")).join("")}
+  </div>
+  ${scannerMathCard()}
+
+  <div class="card"><h2 id="mathformtitle">Add a parameter by hand</h2>
+    <form id="mathform" onsubmit="return saveMath(event)">
+      <input type="hidden" name="id">
+      <div class="row">
+        <div><label>Name</label><input name="name" required placeholder="Injector duty cycle"></div>
+        <div><label>Category</label><input name="category" list="cats" placeholder="Fueling"><datalist id="cats">${cats.map(c=>`<option>${esc(c)}</option>`).join("")}</datalist></div>
+        <div><label>Units</label><input name="units" placeholder="%"></div>
+      </div>
+      <label>Expression / formula</label><textarea name="expression" required style="font-family:ui-monospace,Menlo,monospace" placeholder="([50006.25] * [50011]) / 1200"></textarea>
+      <div class="row">
+        <div><label>Inputs / channels needed</label><input name="inputs" placeholder="IPW (ms), RPM"></div>
+        <div><label>Status</label><select name="status"><option value="unverified">unverified</option><option value="verified">verified (proven on a real log)</option></select></div>
+      </div>
+      <label>Notes (when to use it, gotchas)</label><textarea name="notes"></textarea>
+      <label>Source (thread, doc, self-derived)</label><input name="source">
+      <div class="actions"><button class="btn primary">Save parameter</button>
+        <button type="button" class="btn" onclick="resetMathForm()">Clear</button></div>
+    </form>
+  </div>`;
+}
+
+// ---------- actions ----------
+
+async function uploadFile(e, kind) {
+  e.preventDefault();
+  const f = e.target;
+  const file = f.file.files[0];
+  const qs = new URLSearchParams({
+    vehicle: VEHICLE, kind, name: file.name,
+    desc: f.desc?.value || "", date: f.date?.value || "", rev: f.rev?.value || "",
+  });
+  try {
+    const r = await api(`/api/upload?${qs}`, { method: "POST", body: file });
+    if (r.vinCheck?.status === "mismatch") {
+      flash(`⚠️ WRONG VEHICLE? Saved ${r.saved}, but its VIN is ${r.vinCheck.vin} and this vehicle's profile says ${r.vinCheck.profileVin}. Do not treat this as a baseline until you resolve it.`);
+    } else if (r.analysis && (r.analysis.warnings?.length || /FAILED/.test(r.analysis.checksumSummary || ""))) {
+      flash(`⚠ Saved ${r.saved}, but analysis flagged problems: ${r.analysis.checksumSummary || r.analysis.warnings[0]} — check before trusting this read`);
+    } else if (r.analysis) {
+      const vinNote = r.vinCheck?.status === "unknown"
+        ? ` · VIN ${r.vinCheck.vin} — confirm it's this car, then set it on the profile`
+        : r.vinCheck?.status === "match" ? " · VIN matches profile ✅" : "";
+      flash(`Saved ${r.saved} — ${r.analysis.pcm || ""} OS ${r.analysis.osId || "?"}, ${r.analysis.checksumSummary}${vinNote}${r.milestoneChecked ? " 🏁 stock-read milestone checked!" : ""}`);
+    } else {
+      flash(`Saved ${r.saved} (${fmtSize(r.size)})`);
+    }
+    await load();
+  } catch (err) { flash("Upload failed: " + err.message); }
+  return false;
+}
+
+// --- trim analysis ---------------------------------------------------------
+// Fuel trim is polarity data (lean vs rich around zero), so it gets a diverging
+// scale: warm = positive/lean (PCM adding fuel), cool = negative/rich, neutral
+// gray at zero. Never a rainbow.
+const TRIM_POS = "#e34948", TRIM_NEG = "#2a78d6";
+function trimColor(v, max) {
+  const t = Math.min(Math.abs(v) / (max || 1), 1);
+  if (Math.abs(v) < 0.05) return "var(--grid)";
+  return `color-mix(in oklab, ${v > 0 ? TRIM_POS : TRIM_NEG} ${Math.round(15 + t * 85)}%, var(--surface))`;
+}
+
+async function setUnit(quantity, unit) {
+  const r = await api("/api/preferences", { method: "POST", body: JSON.stringify({ units: { [quantity]: unit } }) });
+  STATE.preferences = r.preferences;
+  flash(`${quantity} now shown in ${unit}`);
+  render();
+}
+
+let LOG_FILTERS = {};
+async function logAnalysis(rel, filters) {
+  const el = $("#logsum");
+  el.innerHTML = `<div class="note">Analyzing…</div>`;
+  if (filters) LOG_FILTERS = { ...LOG_FILTERS, ...filters };
+  LOG_FILTERS.path = rel;
+  const qs = new URLSearchParams(Object.entries(LOG_FILTERS).filter(([, v]) => v !== "" && v != null));
+  const r = await api(`/api/loganalysis?${qs}`);
+  if (!r.ok) { el.innerHTML = `<div class="empty">${esc(r.reason || r.error)}</div>`; return; }
+
+  const rej = r.rejected;
+  const rejTotal = Object.values(rej).reduce((a, b) => a + b, 0);
+  const bins = (r.mafBins.bins || []).filter(b => b.n > 0);
+  const maxAbs = Math.max(0.1, ...bins.map(b => Math.abs(b.avgTotal)));
+
+  el.innerHTML = `
+    <h3 style="margin-top:14px">Trim analysis — ${esc(rel.split("/").pop())}</h3>
+
+    <div class="note" style="margin-bottom:6px">
+      <b>${r.keptCount.toLocaleString()}</b> of ${r.rowCount.toLocaleString()} rows usable
+      (${rejTotal.toLocaleString()} filtered out).
+      Trim data only means anything warmed up, in closed loop, off power enrichment and at steady state —
+      everything else is noise that produces confident, wrong corrections.
+    </div>
+    <table style="margin-bottom:10px"><tr><th>Filtered out</th><th>Rows</th></tr>
+      ${Object.entries(rej).filter(([, n]) => n).map(([k, n]) =>
+        `<tr><td>${esc({cold:"Not warmed up",openLoop:"Open loop",powerEnrich:"Power enrichment",transient:"Transient (throttle/RPM moving)",notRunning:"Engine not running",noTrimData:"No trim data in row"}[k] || k)}</td><td class="num">${n.toLocaleString()}</td></tr>`).join("")}
+    </table>
+
+    ${r.missingChannels.length ? `<div class="note" style="color:var(--warn)">⚠ Channels not found in this log: ${r.missingChannels.map(esc).join(", ")} — filtering is weaker without them, so treat the result with more suspicion.</div>` : ""}
+    ${(r.warnings || []).map(w => `<div class="note" style="color:var(--warn)">⚠ ${esc(w)}</div>`).join("")}
+
+    <div class="note" style="margin:8px 0">
+      <b>Warmed-up threshold applied:</b> ${r.ectThreshold
+        ? `${r.ectThreshold.value} ${esc(r.ectThreshold.unit)}${r.ectThreshold.converted ? ` <span style="color:var(--accent)">(converted from ${esc(r.ectThreshold.from)} — the log records ${esc(r.ectThreshold.unit)})</span>` : ""}`
+        : `<span style="color:var(--warn)">none — see warning above</span>`}
+    </div>
+
+    <details style="margin-bottom:10px"><summary>Adjust filters</summary>
+      <div class="row">
+        <div><label>Warmed up above</label><input id="fEct" type="number" step="1" value="${r.filters.minEct}"></div>
+        <div><label>…in unit</label><select id="fEctUnit">${["°F","°C"].map(u => `<option ${r.filters.minEctUnit === u ? "selected" : ""}>${u}</option>`).join("")}</select></div>
+        <div><label>Max TPS change (%)</label><input id="fTps" type="number" step="0.5" value="${r.filters.maxTpsDelta}"></div>
+        <div><label>Max RPM change</label><input id="fRpm" type="number" step="50" value="${r.filters.maxRpmDelta}"></div>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <div><label><input type="checkbox" id="fCl" ${r.filters.requireClosedLoop ? "checked" : ""} style="width:auto"> Require closed loop</label></div>
+        <div><label><input type="checkbox" id="fPe" ${r.filters.excludePe ? "checked" : ""} style="width:auto"> Exclude power enrichment</label></div>
+      </div>
+      <div class="actions"><button class="btn primary" onclick="rerunAnalysis('${esc(rel)}')">Re-run with these filters</button></div>
+      <div class="note">The temperature threshold is converted into whatever unit the log records before any row is compared.</div>
+    </details>
+
+    ${bins.length ? `
+      <h3>Total fuel trim (%) by MAF frequency (${esc(r.mafBins.axisUnit || "Hz")})</h3>
+      ${trimBarChart(bins, maxAbs)}
+      <table style="margin-top:8px">
+        <tr><th>MAF ${esc(r.mafBins.axisUnit || "Hz")}</th><th>Samples</th><th>LTFT (%)</th><th>STFT (%)</th><th>Total (%)</th><th>Suggested MAF change (%)</th></tr>
+        ${bins.map(b => `<tr${b.enoughData ? "" : ` class="lowdata"`}>
+          <td>${b.from}–${b.to}</td>
+          <td class="num">${b.n}</td>
+          <td class="num">${b.avgLtft > 0 ? "+" : ""}${b.avgLtft}%</td>
+          <td class="num">${b.avgStft > 0 ? "+" : ""}${b.avgStft}%</td>
+          <td class="num"><b>${b.avgTotal > 0 ? "+" : ""}${b.avgTotal}%</b></td>
+          <td class="num">${b.enoughData
+            ? `<b>${b.suggestedPct > 0 ? "+" : ""}${b.suggestedPct}%</b> <span class="note">(×${b.multiplier})</span>`
+            : `<span class="note">only ${b.n} samples — need ${r.mafBins.minSamples}</span>`}</td></tr>`).join("")}
+      </table>
+      <div class="actions">
+        <button class="btn" onclick='copyTable(${JSON.stringify(JSON.stringify(bins.filter(b => b.enoughData)))})'>Copy suggestions as TSV</button>
+      </div>
+      <div class="note">Positive trim means the PCM is adding fuel, so the MAF table is reading low there and the g/s value should go <b>up</b> by that percentage. Rows in grey don't have enough samples to trust.
+        <b>These are draft readings</b> — apply them by hand in HP Tuners after you agree, one region at a time, and log again.</div>
+    ` : `<div class="empty">No usable MAF-frequency bins. Either the log has no MAF Hz channel, or nothing survived filtering.</div>`}
+
+    ${sparkHtml(r.spark)}
+
+    ${widebandHtml(r.wideband)}
+
+    ${r.heat && !r.heat.error && r.heat.cells.length ? `
+      <h3 style="margin-top:16px">Where the trims live — ${esc(r.heat.xRole.toUpperCase())} (${esc(r.heat.xUnit || "?")}) × ${esc(r.heat.yRole.toUpperCase())} (${esc(r.heat.yUnit || "unit not stated in the log")})</h3>
+      ${heatMap(r.heat)}
+      <div class="note">Cell values are total fuel trim in ${esc(r.heat.valueUnit || "%")}.</div>
+    ` : ""}
+    <div class="note">${esc(r.note)}</div>`;
+  if (!NO_SCROLL) el.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+// Knock retard is magnitude, not polarity, so it gets a single-hue sequential
+// ramp (light -> dark) rather than the diverging scale used for fuel trim.
+function krColor(v, max) {
+  if (!v) return "var(--grid)";
+  const t = Math.min(v / (max || 1), 1);
+  return `color-mix(in oklab, #d03b3b ${Math.round(20 + t * 80)}%, var(--surface))`;
+}
+function sparkColor(v, min, max) {
+  const t = max === min ? 0.5 : (v - min) / (max - min);
+  return `color-mix(in oklab, #2a78d6 ${Math.round(15 + t * 75)}%, var(--surface))`;
+}
+
+// tipFn lets each caller keep its own tooltip wording (units, axis names);
+// without it the grid would flatten every map to a bare number.
+function gridSvg(map, colorFn, fmt, enoughFn = () => true,
+                 tipFn = (c) => `${map.xRole || "x"} ${c.x}, ${map.yRole || "y"} ${c.y}: ${fmt(c)} (n=${c.n})`) {
+  const cw = 48, chh = 24, padL = 58, padT = 18;
+  const w = padL + map.xs.length * cw + 10, ht = padT + map.ys.length * chh + 26;
+  const at = (x, y) => map.cells.find(c => c.x === x && c.y === y);
+  return `<svg class="chart" viewBox="0 0 ${w} ${ht}" style="width:100%;max-width:${w}px;height:auto">
+    ${map.ys.map((y, r) => `<text x="${padL - 6}" y="${padT + r * chh + 16}" text-anchor="end">${y}</text>`).join("")}
+    ${map.xs.map((x, c) => `<text x="${padL + c * cw + cw / 2}" y="${ht - 8}" text-anchor="middle">${x}</text>`).join("")}
+    ${map.ys.map((y, r) => map.xs.map((x, c) => {
+      const cell = at(x, y); if (!cell) return "";
+      return `<g${enoughFn(cell) ? "" : ` class="lowdata"`}><rect class="heatcell" x="${padL + c * cw}" y="${padT + r * chh}" width="${cw}" height="${chh}"
+          fill="${colorFn(cell)}"><title>${esc(tipFn(cell))}</title></rect>
+        <text class="val" x="${padL + c * cw + cw / 2}" y="${padT + r * chh + 16}" text-anchor="middle">${fmt(cell)}</text></g>`;
+    }).join("")).join("")}
+  </svg>`;
+}
+
+// Knock outranks fuelling: it is the failure mode that destroys hardware.
+function sparkHtml(s) {
+  if (!s) return "";
+  if (!s.present) return `<div class="note" style="margin-top:12px">No spark or knock channels in this log — ${esc(s.reason)}. Add Knock Retard and Spark Advance to your channel list to see this section.</div>`;
+
+  const knocked = s.krSamples > 0;
+  const krMax = s.krMap ? Math.max(...s.krMap.cells.map(c => c.max), 0.1) : 0;
+
+  return `
+    <h3 style="margin-top:18px">Spark &amp; knock${s.krChannel ? ` — ${esc(s.krChannel)}` : ""}</h3>
+
+    ${!s.hasKnockChannel ? `<div class="note" style="color:var(--warn)">⚠ No knock-retard channel — spark advance is shown, but nothing here can tell you whether the engine is knocking. Log KR.</div>`
+      : knocked ? `<div class="card" style="border-color:#d03b3b;margin:10px 0">
+        <b style="color:#d03b3b">⚠ Knock retard on ${s.krSamples} sample${s.krSamples === 1 ? "" : "s"} across ${s.eventCount} event${s.eventCount === 1 ? "" : "s"}.</b>
+        <div class="note" style="margin-top:4px">Worst: <b>${s.worst.kr}° retard</b> at ${s.worst.rpm} RPM${s.worst.load != null ? `, ${s.worst.load} ${esc(s.yUnit || "")}` : ""}${s.worst.iat != null ? `, IAT ${s.worst.iat}°` : ""}${s.worst.spark != null ? `, ${s.worst.spark}° advance` : ""}.
+        Knock is the failure mode that destroys pistons — resolve it before chasing fuelling or adding timing anywhere.</div></div>`
+      : `<div class="note">✅ No knock retard recorded across ${s.runningSamples.toLocaleString()} running samples.</div>`}
+
+    ${s.events.length ? `
+      <h3>Knock events</h3>
+      <table><tr><th>Peak retard</th><th>RPM</th><th>Load (${esc(s.yUnit || "?")})</th><th>IAT</th><th>Advance</th><th>Samples</th><th></th></tr>
+        ${s.events.map(e => `<tr${e.suspectFalse ? ` style="opacity:.6"` : ""}>
+          <td class="num"><b>${e.peakKr}°</b></td><td class="num">${esc(e.rpmRange)}</td>
+          <td class="num">${e.load ?? "—"}</td><td class="num">${e.iat ?? "—"}</td>
+          <td class="num">${e.sparkAtPeak ?? "—"}°</td><td class="num">${e.samples}</td>
+          <td class="note">${e.suspectFalse ? "light load — possible false knock (rough road, drivetrain noise)" : ""}</td></tr>`).join("")}
+      </table>
+      <div class="note">Retard under light throttle is often the knock sensor hearing the road rather than the engine. Retard at high load is real until proven otherwise.</div>` : ""}
+
+    ${s.krMap ? `
+      <h3>Knock retard map — RPM × ${esc(s.yRole?.toUpperCase() || "load")} (${esc(s.yUnit || "unit not stated")})</h3>
+      ${gridSvg(s.krMap, c => krColor(c.max, krMax), c => (c.max ? c.max.toFixed(1) : "·"), () => true,
+          c => `${c.x} RPM, ${c.y} ${s.yUnit || ""}: max ${c.max}° retard over ${c.n} samples`)}
+      <div class="note">Each cell shows the <b>maximum</b> retard seen there, not the average — one hard event matters more than a quiet mean. Dots are cells that never retarded.</div>` : ""}
+
+    ${s.sparkMap ? `
+      <h3>Spark advance map — average ${esc(s.units.spark)}</h3>
+      ${(() => { const vs = s.sparkMap.cells.map(c => c.avg); const lo = Math.min(...vs), hi = Math.max(...vs);
+         return gridSvg(s.sparkMap, c => sparkColor(c.avg, lo, hi), c => c.avg.toFixed(0), () => true,
+            c => `${c.x} RPM, ${c.y} ${s.yUnit || ""}: ${c.avg}° average advance (max ${c.max}°, n=${c.n})`); })()}
+      <div class="note">Average commanded advance per cell. Compare against the knock map above: timing that coincides with retard is the timing to pull first.</div>` : ""}
+
+    <div class="note">${esc(s.note)}</div>`;
+}
+
+// Wideband is the only thing that can see open loop and WOT — where trims
+// don't exist and a lean mixture is the expensive kind of mistake.
+function widebandHtml(wb) {
+  if (!wb) return "";
+  if (!wb.present) return `<div class="note" style="margin-top:12px">No wideband channel in this log — ${esc(wb.reason)}. Trim analysis above only covers closed loop; log your wideband to see WOT and power enrichment.</div>`;
+
+  const danger = wb.leanWotSamples > 0;
+  const scaleNote = wb.scale.assumedLambda
+    ? `<b style="color:var(--warn)">⚠ ${esc(wb.scale.basis)}</b> — if it is actually EQ, every number below is inverted. Set the scale explicitly to be sure.`
+    : `Scale: ${esc(wb.scale.scale)} (${esc(wb.scale.basis)})`;
+
+  return `
+    <h3 style="margin-top:18px">Wideband — ${esc(wb.channel)}</h3>
+    <div class="note">${scaleNote} · Fuel: ${esc(wb.fuel.label)}, stoich ${wb.fuel.stoich} ·
+      ${wb.commandedChannel ? `compared against ${esc(wb.commandedChannel)}` : `<b style="color:var(--warn)">no commanded-AFR channel — measured values only, no error figure</b>`}</div>
+
+    ${danger ? `<div class="card" style="border-color:#d03b3b;margin:10px 0">
+      <b style="color:#d03b3b">⚠ ${wb.leanWotSamples} of ${wb.wotSamples} wide-open-throttle samples ran leaner than λ ${wb.wotDefinition.leanLimitLambda}.</b>
+      <div class="note" style="margin-top:4px">Leanest point: <b>λ ${wb.worstWot.lambda}</b> (${(wb.worstWot.lambda * wb.fuel.stoich).toFixed(1)} AFR) at ${wb.worstWot.rpm} RPM${wb.worstWot.commanded ? `, where λ ${wb.worstWot.commanded} was commanded` : ""}.
+      Lean at high load is how engines get hurt — treat this as a stop-and-investigate, not a tuning nicety. Check fuel supply and injector sizing before adding timing.</div>
+    </div>` : (wb.wotSamples ? `<div class="note">✅ No WOT samples leaner than λ ${wb.wotDefinition.leanLimitLambda} across ${wb.wotSamples} samples.</div>` : `<div class="note">No wide-open-throttle samples in this log (WOT = power enrichment active, or throttle ≥ ${wb.wotDefinition.tpsThresholdPct}%).</div>`)}
+
+    ${wb.wot.length ? `
+      <h3>Wide-open throttle by RPM</h3>
+      <table><tr><th>RPM</th><th>Samples</th><th>Measured</th><th>Commanded</th><th>Error</th><th>Leanest</th></tr>
+        ${wb.wot.map(b => `<tr${b.lean ? ` style="color:#d03b3b"` : ""}>
+          <td>${b.from}–${b.to}</td><td class="num">${b.n}</td>
+          <td class="num"><b>λ ${b.avgLambda}</b> <span class="note">(${b.avgAfr} AFR)</span></td>
+          <td class="num">${b.commandedLambda != null ? `λ ${b.commandedLambda} <span class="note">(${b.commandedAfr} AFR)</span>` : "—"}</td>
+          <td class="num">${b.errorPct != null ? `${b.errorPct > 0 ? "+" : ""}${b.errorPct}%` : "—"}</td>
+          <td class="num">λ ${b.leanestLambda}</td></tr>`).join("")}
+      </table>
+      <div class="note">Positive error means leaner than commanded. λ below 1.00 is rich, above 1.00 is lean.</div>` : ""}
+
+    ${wb.closedLoopCheck ? `
+      <h3>Closed-loop cross-check</h3>
+      <div class="note">Over ${wb.closedLoopCheck.samples} closed-loop samples the wideband measured
+        <b>λ ${wb.closedLoopCheck.avgMeasuredLambda}</b> (${wb.closedLoopCheck.avgMeasuredAfr} AFR) against
+        <b>λ ${wb.closedLoopCheck.avgCommandedLambda}</b> commanded — ${wb.closedLoopCheck.errorPct > 0 ? "+" : ""}${wb.closedLoopCheck.errorPct}%.
+        ${Math.abs(wb.closedLoopCheck.errorPct) > 3
+          ? `<b style="color:var(--warn)">The narrowband loop thinks it is on target while the wideband disagrees</b> — suspect the O2 sensors, the commanded table, or wideband calibration before trusting the trim corrections above.`
+          : `Consistent with the trim data, so the fuelling corrections above rest on solid ground.`}</div>` : ""}
+
+    <div class="row" style="margin-top:10px">
+      <div><label>Fuel (sets stoich for AFR)</label><select id="wbFuel">${Object.entries(STATE.fuels || {}).map(([k, f]) =>
+        `<option value="${esc(k)}" ${wb.fuel.key === k ? "selected" : ""}>${esc(f.label)} — ${f.stoich}</option>`).join("")}</select></div>
+      <div><label>Wideband scale</label><select id="wbScale">${["", "afr", "lambda", "eq"].map(s =>
+        `<option value="${s}" ${wb.scale.scale === s ? "selected" : ""}>${s === "" ? "auto-detect" : s}</option>`).join("")}</select></div>
+      <div><label>WOT throttle (%)</label><input id="wbTps" type="number" value="${wb.wotDefinition.tpsThresholdPct}"></div>
+      <div><label>Lean limit (λ)</label><input id="wbLean" type="number" step="0.01" value="${wb.wotDefinition.leanLimitLambda}"></div>
+    </div>
+    <div class="actions"><button class="btn" onclick="rerunWideband()">Re-run wideband</button></div>
+    <div class="note">${esc(wb.note)}</div>`;
+}
+
+function trimBarChart(bins, maxAbs) {
+  const rowH = 22, w = 560, mid = 300, scale = 200 / maxAbs, h = bins.length * rowH + 26;
+  return `<svg class="chart" viewBox="0 0 ${w} ${h}" style="width:100%;max-width:${w}px;height:auto">
+    <line x1="${mid}" y1="14" x2="${mid}" y2="${h - 12}" stroke="var(--baseline,var(--grid))" stroke-width="1"/>
+    <text x="${mid}" y="10" text-anchor="middle">0%</text>
+    ${bins.map((b, i) => {
+      const y = 18 + i * rowH, len = Math.abs(b.avgTotal) * scale;
+      const x = b.avgTotal >= 0 ? mid : mid - len;
+      return `<g${b.enoughData ? "" : ` class="lowdata"`}>
+        <text x="${mid - 210}" y="${y + 11}" text-anchor="start">${b.from}</text>
+        <rect x="${x}" y="${y + 3}" width="${Math.max(len, 1)}" height="12" rx="4"
+              fill="${b.avgTotal >= 0 ? TRIM_POS : TRIM_NEG}"/>
+        <text class="val" x="${b.avgTotal >= 0 ? x + len + 6 : x - 6}" y="${y + 13}"
+              text-anchor="${b.avgTotal >= 0 ? "start" : "end"}">${b.avgTotal > 0 ? "+" : ""}${b.avgTotal}%</text>
+      </g>`;
+    }).join("")}
+  </svg>
+  <div class="note legend"><span style="background:${TRIM_NEG}"></span> rich (PCM pulling fuel) &nbsp;
+    <span style="background:${TRIM_POS}"></span> lean (PCM adding fuel) &nbsp;· MAF Hz on the left</div>`;
+}
+
+// The trim heat map is the same grid as the spark maps — one renderer, two
+// colour scales (diverging here for polarity, sequential there for magnitude).
+function heatMap(h) {
+  const maxAbs = Math.max(0.1, ...h.cells.map(c => Math.abs(c.avg)));
+  const sign = v => (v > 0 ? "+" : "") + v;
+  return gridSvg(h, c => trimColor(c.avg, maxAbs), c => sign(c.avg), c => c.enoughData,
+      c => `${h.xRole} ${c.x}, ${h.yRole} ${c.y}: ${sign(c.avg)}% (n=${c.n})`)
+    + `<div class="note">${esc(h.yRole)} down the side, ${esc(h.xRole)} across the bottom. Faded cells have fewer than ${h.minSamples} samples. Hover a cell for its sample count.</div>`;
+}
+
+// LOG_FILTERS.path holds the log currently on screen
+async function rerunWideband() {
+  await logAnalysis(LOG_FILTERS.path, {
+    fuel: $("#wbFuel").value,
+    widebandScale: $("#wbScale").value,
+    wotTps: $("#wbTps").value,
+    wotLeanLambda: $("#wbLean").value,
+  });
+}
+
+async function rerunAnalysis(rel) {
+  await logAnalysis(rel, {
+    minEct: $("#fEct").value, minEctUnit: $("#fEctUnit").value,
+    maxTpsDelta: $("#fTps").value, maxRpmDelta: $("#fRpm").value,
+    requireClosedLoop: $("#fCl").checked ? "1" : "0",
+    excludePe: $("#fPe").checked ? "1" : "0",
+  });
+}
+
+function copyTable(json) {
+  const bins = JSON.parse(json);
+  const tsv = ["MAF Hz from\tMAF Hz to\tSamples\tAvg total trim (%)\tSuggested change (%)\tMultiplier (ratio)",
+    ...bins.map(b => `${b.from}\t${b.to}\t${b.n}\t${b.avgTotal}\t${b.suggestedPct}\t${b.multiplier}`)].join("\n");
+  navigator.clipboard.writeText(tsv).then(() => flash("Suggestions copied — paste into a spreadsheet or your notes"));
+}
+
+async function logSummary(rel) {
+  const r = await api(`/api/logsummary?path=${encodeURIComponent(rel)}`);
+  const el = $("#logsum");
+  if (!r.ok) { el.innerHTML = `<div class="empty">${esc(r.reason)}</div>`; return; }
+  el.innerHTML = `<h3>${esc(rel.split("/").pop())} — ${r.rows} rows${r.durationSec ? `, ${r.durationSec} ${esc(r.durationUnit || "s")}` : ""}</h3>
+    <table><tr><th>Channel</th><th>Unit</th><th>Min</th><th>Avg</th><th>Max</th></tr>
+    ${r.channels.filter(c => !c.nonNumeric).map(c =>
+      `<tr><td>${esc(c.name)}</td>
+        <td class="note">${c.unit ? esc(c.unit) : "<i>not stated</i>"}${c.converted ? ` <span style="color:var(--accent)">(from ${esc(c.nativeUnit)})</span>` : ""}</td>
+        <td class="num">${+c.min.toFixed(2)}</td><td class="num">${+c.avg.toFixed(2)}</td><td class="num">${+c.max.toFixed(2)}</td></tr>`).join("")}</table>
+    <div class="note">Quick stats only. Units come from each column's own header; where a column was converted to your preference, the original unit is named. Channels showing <i>not stated</i> had no unit in the log header — nothing was assumed. Use MegaLogViewer HD or VCM Scanner for real analysis.</div>`;
+}
+
+async function uploadTune(e) {
+  e.preventDefault();
+  const f = e.target;
+  const file = f.file.files[0];
+  const attach = f.rev.value; // attaching the other format to an existing revision
+  const qs = new URLSearchParams({ vehicle: VEHICLE, kind: "tune", name: file.name, desc: f.desc.value, rev: attach });
+  try {
+    const r = await api(`/api/upload?${qs}`, { method: "POST", body: file });
+    const rev = r.saved.match(/(v\d{3})_/)?.[1] || "v???";
+    if (attach) {
+      flash(`Attached ${file.name.split(".").pop()} to ${rev} — changelog entry for ${rev} already covers it`);
+    } else {
+      await api("/api/changelog", { method: "POST", body: JSON.stringify({
+        vehicle: VEHICLE, rev, title: f.title.value || f.desc.value,
+        base: f.base.value, changed: f.changed.value, why: f.why.value,
+      })});
+      flash(`Checked in ${rev} + changelog entry`);
+    }
+    await load();
+  } catch (err) { flash("Check-in failed: " + err.message); }
+  return false;
+}
+
+async function saveSession(e) {
+  e.preventDefault();
+  const f = e.target, b = { vehicle: VEHICLE };
+  for (const k of ["date","rev","tools","goal","datalogs","observations","changes","result","next","concepts"]) b[k] = f[k].value;
+  try {
+    const r = await api("/api/session", { method: "POST", body: JSON.stringify(b) });
+    flash(`Saved ${r.saved}`);
+    await load();
+  } catch (err) { flash("Save failed: " + err.message); }
+  return false;
+}
+
+async function cycleStatus(concept, cur) {
+  const order = ["⬜","🟡","🟢"];
+  const next = order[(order.indexOf(cur) + 1) % 3];
+  await api("/api/progression", { method: "POST", body: JSON.stringify({ concept, status: next }) });
+  await load();
+}
+
+async function editNote(concept, status, cur) {
+  const notes = prompt(`Note for "${concept}":`, cur);
+  if (notes === null) return;
+  await api("/api/progression", { method: "POST", body: JSON.stringify({ concept, status, notes }) });
+  await load();
+}
+
+async function toggleMilestone(text, done) {
+  await api("/api/progression", { method: "POST", body: JSON.stringify({ milestone: text, done }) });
+  await load();
+}
+
+async function saveMath(e) {
+  e.preventDefault();
+  const f = e.target, b = {};
+  for (const k of ["id","name","category","units","expression","inputs","status","notes","source"]) b[k] = f[k].value;
+  if (!b.id) delete b.id;
+  await api("/api/usermath", { method: "POST", body: JSON.stringify(b) });
+  flash("Parameter saved");
+  await load();
+  return false;
+}
+
+function editMath(id) {
+  const p = STATE.userMath.parameters.find(x => x.id === id);
+  const f = $("#mathform");
+  for (const k of ["id","name","category","units","expression","inputs","status","notes","source"]) f[k].value = p[k] || "";
+  $("#mathformtitle").textContent = "Edit: " + p.name;
+  f.scrollIntoView({ behavior: "smooth" });
+}
+
+function resetMathForm() { $("#mathform").reset(); $("#mathform").id.value = ""; $("#mathformtitle").textContent = "Add a parameter"; }
+
+async function delMath(id, name) {
+  if (!confirm(`Delete "${name}" from the user math repo?`)) return;
+  await api("/api/usermath", { method: "POST", body: JSON.stringify({ id, delete: true }) });
+  await load();
+}
+
+function copyExpr(btn, expr) {
+  navigator.clipboard.writeText(expr).then(() => flash("Expression copied"));
+}
+
+async function viewFile(rel) {
+  const text = await (await fetch(`/api/file?path=${encodeURIComponent(rel)}`)).text();
+  const el = $("#fileview") || $("#main");
+  const box = document.createElement("div");
+  box.innerHTML = `<h3 style="margin-top:14px">${esc(rel.split("/").pop())}</h3><pre class="md">${esc(text)}</pre>`;
+  if ($("#fileview")) { $("#fileview").innerHTML = box.innerHTML; }
+  else { el.prepend(box); }
+}
+
+async function syncRepo() {
+  flash("Syncing with GitHub…");
+  const r = await api("/api/git", { method: "POST", body: JSON.stringify({ action: "sync" }) });
+  flash(r.message);
+  await load();
+}
+
+async function commitPush() {
+  const message = prompt("Commit message:", "app: update");
+  if (message === null) return;
+  flash("Committing…");
+  const r = await api("/api/git", { method: "POST", body: JSON.stringify({ action: "commit-push", message }) });
+  if (r.error) flash("❌ " + r.error);
+  else if (r.committed && r.pushed) flash("Committed and pushed ✓");
+  else if (r.pushed) flash("Nothing new to commit; remote is up to date");
+  else flash("Committed locally; push failed — check connection and try Sync");
+  await load();
+}
+
+window.addEventListener("hashchange", () => { TAB = location.hash.slice(1) || "overview"; render(); });
+
+// Deep links: open the app directly on a result rather than a blank tab.
+// ?analyze=<log> · ?bin=<bin> · ?compare=a|b · ?flash=<rev> · ?doc=<path>
+// Also how the documentation screenshots are captured reproducibly.
+async function runDeepLink() {
+  const q = new URLSearchParams(location.search);
+  const wait = ms => new Promise(r => setTimeout(r, ms));
+  try {
+    if (q.get("vehicle")) { VEHICLE = q.get("vehicle"); TIMELINE = null; render(); }
+    if (q.get("analyze")) { TAB = "datalogs"; render(); await logAnalysis(q.get("analyze")); }
+    if (q.get("bin")) { TAB = "tunes"; render(); await analyzeBin(q.get("bin")); }
+    if (q.get("compare")) {
+      const [a, b] = q.get("compare").split("|");
+      TAB = "tunes"; render(); await wait(30);
+      if ($("#cmpA") && a) $("#cmpA").value = a;
+      if ($("#cmpB") && b) $("#cmpB").value = b;
+      await compareBins();
+    }
+    if (q.get("flash")) { TAB = "tunes"; render(); await startFlash(q.get("flash"), q.get("flashFile") || undefined); }
+    if (q.get("doc")) { TAB = "library"; render(); await wait(30); await viewDoc(q.get("doc")); }
+  } catch (e) { console.warn("deep link failed:", e.message); }
+}
+load().then(runDeepLink).catch(e => { $("#main").innerHTML = `<div class="card">Failed to load: ${esc(e.message)}</div>`; });
+</script>
+</body>
+</html>

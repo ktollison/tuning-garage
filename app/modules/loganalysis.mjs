@@ -1,0 +1,794 @@
+// Tuning Garage — Copyright (C) 2026 Kevin Tollison
+// Free software under the GNU General Public License v3 or later, WITHOUT ANY
+// WARRANTY. See LICENSE and NOTICE.md. Read DISCLAIMER.md before tuning.
+
+// Datalog analysis — CSV in, binned statistics out. Pure functions, no I/O.
+//
+// Everything here produces *draft readings for review*. Nothing it computes is
+// ever written into a tune: the MAF suggestion is a table to apply by hand in
+// HP Tuners, after you agree with it.
+
+import { detectUnit, convert } from "./units.mjs";
+
+// ---------- channel detection ----------
+// VCM Scanner column names vary by layout and are user-editable, so match
+// loosely and always let the caller override.
+const PATTERNS = {
+  time:        [/^time/i, /offset/i, /elapsed/i],
+  rpm:         [/engine\s*speed/i, /\brpm\b/i],
+  // HP Tuners calls these "Mass Airflow Sensor" (Hz) and "Mass Airflow (SAE)"
+  // (lb/min) — neither contains "MAF", and the two are told apart only by
+  // their unit, so the frequency channel is matched on its declared [Hz].
+  mafHz:       [/maf.*(freq|hz)/i, /\bmaf\s*hz\b/i, /mass\s*air\s*flow.*\[\s*hz\s*\]/i],
+  mafGs:       [/maf.*(g\/s|gps|g per|airflow|air flow)/i, /mass\s*air\s*flow\b(?!.*\[\s*hz\s*\])/i],
+  ltft:        [/ltft/i, /long\s*term.*(fuel|trim)/i],
+  stft:        [/stft/i, /short\s*term.*(fuel|trim)/i],
+  ect:         [/\bect\b/i, /coolant/i],
+  iat:         [/\biat\b/i, /intake\s*air\s*temp/i],
+  tps:         [/\btps\b/i, /throttle\s*position/i, /pedal/i],
+  map:         [/\bmap\b/i, /manifold\s*abs/i],
+  load:        [/\bload\b/i, /cylinder\s*airmass/i, /air\s*mass/i],
+  pe:          [/power\s*enrich/i, /\bpe\b/i],
+  closedLoop:  [/closed.?loop/i, /fuel\s*sys/i, /\bcl\b/i],
+  knockRetard: [/knock\s*retard/i, /\bkr\b/i],
+  spark:       [/spark\s*adv/i, /ignition\s*timing/i, /timing\s*adv/i],
+  // HP Tuners writes the noun first ("Equivalence Ratio Commanded"), so match
+  // both word orders rather than assuming "commanded" comes first.
+  commandedAfr:[/commanded.*(afr|equiv|lambda)/i, /\beq\s*cmd\b/i, /afr.*(cmd|command)/i, /target.*(afr|lambda)/i,
+                /(equiv|lambda|air-?fuel\s*ratio).*command/i],
+  // On Gen III there is no CAN wideband: the controller feeds the MPVI's
+  // analog input over the ProLink cable, and VCM Scanner names that channel
+  // after the DEVICE — "MPVI2.1 -> AEM 30-(03x0,2340,5130)" — with no "AFR",
+  // "UEGO" or "wideband" anywhere in it. Match the common controllers by name.
+  widebandAfr: [/wideband/i, /wb.*afr/i, /afr.*wide/i, /\bafr\b/i, /\blambda\b/i, /\beq\s*act\b/i, /uego/i, /\bo2.*wide/i,
+                /\baem\b/i, /afr\s*500/i, /innovate/i, /\blc-?[12]\b/i, /\bmtx-?l\b/i, /zeitronix/i,
+                /ballenger/i, /\bplx\b/i, /spartan/i, /14\s*point\s*7/i],
+};
+
+// Fuel chemistry. Stoichiometric AFR depends on the fuel, so lambda↔AFR
+// conversion is fuel-dependent and must never be hard-coded to gasoline.
+export const FUELS = {
+  gasoline: { label: "Gasoline (E10 pump)", stoich: 14.7 },
+  e85:      { label: "E85", stoich: 9.765 },
+  e50:      { label: "E50 blend", stoich: 11.7 },
+  methanol: { label: "Methanol (M100)", stoich: 6.4 },
+};
+
+// Every column matching each role, in order. analyze() needs the full list
+// because the FIRST match is not always the live one: a log can carry three
+// wideband channels where only the third reports.
+export function detectCandidates(headers) {
+  const found = {};
+  for (const [role, pats] of Object.entries(PATTERNS)) {
+    const idxs = headers.map((h, i) => ({ h, i })).filter(({ h }) => pats.some(p => p.test(h))).map(({ i }) => i);
+    if (idxs.length) found[role] = idxs;
+  }
+  return found;
+}
+
+export function detectChannels(headers) {
+  const found = {};
+  for (const [role, pats] of Object.entries(PATTERNS)) {
+    // bank-specific trims: collect every match so both banks can be averaged
+    const idxs = headers
+      .map((h, i) => ({ h, i }))
+      .filter(({ h }) => pats.some(p => p.test(h)))
+      .map(({ i }) => i);
+    if (idxs.length) found[role] = role === "ltft" || role === "stft" ? idxs : idxs[0];
+  }
+  return found;
+}
+
+// ---------- CSV parsing ----------
+// Two shapes turn up in practice and they are nothing alike:
+//
+//   plain      one header row, every row carries every channel.
+//
+//   HP Tuners  a preamble ([Log Information], [Channel Information],
+//              [Channel Data]) followed by SPARSE rows — each channel logs on
+//              its own interval, so a row holds only the channels that ticked.
+//              In a real 42-channel log, no row carried both RPM and STFT.
+//
+// Reading an HP Tuners file as plain CSV silently yields one column named
+// "HP Tuners CSV Log File" and zero detected channels, which is how this went
+// unnoticed until a real export was tried. Sparse files must be run through
+// densify() before any row-wise filtering.
+const splitCsv = l => l.split(",").map(c => c.trim().replace(/^"|"$/g, ""));
+const toNum = c => { const v = parseFloat(c); return Number.isFinite(v) ? v : c; };
+
+// Channel names can contain unquoted commas. A real export carried
+// "MPVI2.1 -> AEM 30-(03x0,2340,5130)" — the device's part numbers — which
+// splits into three fields and pushes the names row out of step with the IDs,
+// units and data rows. Rejoin by balancing brackets until the count matches.
+// That one sat last so only its own name was mangled, but a comma-bearing name
+// mid-list would misalign every channel after it.
+function rejoinNames(fields, target) {
+  if (!target || fields.length <= target) return fields;
+  const depthOf = s => (s.match(/[([]/g) || []).length - (s.match(/[)\]]/g) || []).length;
+  const out = [];
+  let buf = null, depth = 0;
+  for (const f of fields) {
+    if (buf === null) {
+      const d = depthOf(f);
+      if (d > 0) { buf = f; depth = d; } else out.push(f);
+    } else {
+      buf += "," + f; depth += depthOf(f);
+      if (depth <= 0) { out.push(buf); buf = null; depth = 0; }
+    }
+  }
+  if (buf !== null) out.push(buf);
+  // still too many: fold the tail into the last column rather than misalign
+  while (out.length > target) out.splice(target - 1, 2, out[target - 1] + "," + out[target]);
+  return out;
+}
+
+// HP Tuners states units in their own row rather than in the channel name.
+// Everything downstream (the ECT threshold, the wideband scale) reads units
+// out of the header text, so fold them in: "Engine Coolant Temp" + "°F".
+const mergeUnits = (names, units) =>
+  names.map((n, i) => {
+    const u = (units?.[i] || "").trim();
+    return u && !n.includes("[") ? `${n} [${u}]` : n;
+  });
+
+export function parseCsv(text) {
+  const raw = text.split(/\r?\n/);
+  const isHpt = /^HP Tuners CSV Log File/i.test(raw[0]?.trim() || "")
+    || raw.slice(0, 40).some(l => l.trim() === "[Channel Data]");
+
+  if (isHpt) {
+    const idx = l => raw.findIndex(x => x.trim() === l);
+    const chInfo = idx("[Channel Information]");
+    const chData = idx("[Channel Data]");
+    if (chData === -1) return { headers: [], rows: [], format: "hptuners" };
+
+    // [Channel Information] holds up to three rows: parameter IDs, names,
+    // units. Older exports omit the ID row, so find the names row by working
+    // back from [Channel Data] rather than assuming a fixed offset.
+    const block = raw.slice(chInfo + 1, chData).map(l => l.trimEnd()).filter(l => l.trim());
+    let ids = null, names = null, units = null;
+    if (block.length >= 3) [ids, names, units] = block.slice(-3).map(splitCsv);
+    else if (block.length === 2) [names, units] = block.map(splitCsv);
+    else if (block.length === 1) names = splitCsv(block[0]);
+    if (!names) return { headers: [], rows: [], format: "hptuners" };
+
+    // If the "ids" row isn't actually numeric IDs, it was really the names row.
+    if (ids && !ids.every(v => /^\d*$/.test(v))) { units = names; names = ids; ids = null; }
+    // Column count comes from the DATA rows: they are what the header has to
+    // line up with. The IDs and units rows are only a fallback — trusting a
+    // short IDs row would fold genuine channels together.
+    const firstData = raw.slice(chData + 1).find(l => l.trim() && !l.trim().startsWith("["));
+    const width = firstData ? splitCsv(firstData).length : (ids?.length || units?.length || 0);
+    names = rejoinNames(names, width);
+
+    const headers = mergeUnits(names, units);
+    const rows = [];
+    let filled = 0;
+    for (let i = chData + 1; i < raw.length; i++) {
+      const line = raw[i];
+      if (!line.trim() || line.trim().startsWith("[")) continue;
+      const cells = splitCsv(line);
+      rows.push(cells.map(c => (c === "" ? null : toNum(c))));
+      for (const c of cells) if (c !== "") filled++;
+    }
+    // sparse if rows are mostly holes — the signature of interval logging
+    const density = rows.length ? filled / (rows.length * headers.length) : 1;
+    return {
+      headers, rows, unitsRow: units || null, parameterIds: ids,
+      format: "hptuners", sparse: density < 0.9, density: +density.toFixed(3),
+      timeIdx: headers.findIndex(h => /^offset/i.test(h)),
+    };
+  }
+
+  const lines = raw.filter(l => l.trim());
+  if (lines.length < 2) return { headers: [], rows: [], format: "plain" };
+  // VCM Scanner exports sometimes carry a units row under the header
+  const headers = splitCsv(lines[0]);
+  let start = 1;
+  const looksNumeric = r => r.filter(c => Number.isFinite(parseFloat(c))).length > r.length / 2;
+  if (lines[1] && !looksNumeric(splitCsv(lines[1]))) start = 2;
+  const rows = [];
+  for (let i = start; i < lines.length; i++) rows.push(splitCsv(lines[i]).map(toNum));
+  return { headers, rows, unitsRow: start === 2 ? splitCsv(lines[1]) : null, format: "plain", sparse: false };
+}
+
+// ---------- resampling sparse logs onto a uniform time grid ----------
+// Forward-fill (last known value holds) onto a fixed interval. Two reasons for
+// a grid rather than filling in place:
+//   * statistics become time-weighted instead of weighted by how often a
+//     channel happens to be polled;
+//   * the steady-state filter compares consecutive rows, and filling in place
+//     leaves long runs of identical held values whose deltas are always 0 —
+//     every transient would look like steady state.
+// A held value must also EXPIRE. One real 4.7-hour log sat idle for long
+// stretches; holding each channel's last reading across those gaps invented
+// ~160,000 identical samples and buried the genuine data underneath them. So a
+// channel may only be held for a few of its OWN update intervals, measured
+// from the log itself because intervals are per-channel and user-configured.
+function updateIntervals(parsed, ti) {
+  const width = parsed.headers.length;
+  const prev = new Array(width).fill(null);
+  const gaps = Array.from({ length: width }, () => []);
+  for (const row of parsed.rows) {
+    const t = Number(row[ti]);
+    if (!Number.isFinite(t)) continue;
+    for (let i = 0; i < width; i++) {
+      if (row[i] === null || row[i] === undefined || row[i] === "") continue;
+      if (prev[i] !== null && t > prev[i]) gaps[i].push(t - prev[i]);
+      prev[i] = t;
+    }
+  }
+  return gaps.map(g => {
+    if (!g.length) return null;
+    g.sort((a, b) => a - b);
+    return g[Math.floor(g.length / 2)];      // median, so one pause doesn't skew it
+  });
+}
+
+// One exported file can hold more than one logging run: the Offset column
+// restarts near zero and counts up again. A real 129k-row export contained two
+// sessions (21 min, then 14 min) plus a single corrupt timestamp of 16778.048 s
+// sitting between them. Left alone, the corrupt row makes everything after it
+// look out-of-order and the whole second session is silently discarded.
+//
+// So: drop implausible forward jumps, and rebase each restart so the sessions
+// run back to back on one timeline. Segment boundaries are reported, because a
+// boundary is the one place a sample-to-sample delta is meaningless.
+export function normalizeTime(parsed) {
+  const ti = parsed.timeIdx ?? 0;
+  const rows = parsed.rows.filter(r => Number.isFinite(Number(r[ti])));
+  if (rows.length < 3) return { rows: parsed.rows, segments: 1, droppedRows: 0, boundaries: [] };
+
+  const gaps = [];
+  for (let i = 1; i < rows.length; i++) {
+    const d = Number(rows[i][ti]) - Number(rows[i - 1][ti]);
+    if (d > 0) gaps.push(d);
+  }
+  gaps.sort((a, b) => a - b);
+  const med = gaps.length ? gaps[Math.floor(gaps.length / 2)] : 0.1;
+  const jumpLimit = Math.max(60, med * 1000);   // beyond this, the stamp is junk
+
+  const out = [];
+  const boundaries = [];
+  let offset = 0, prev = null, dropped = 0, segments = 1;
+  for (const r of rows) {
+    const t = Number(r[ti]);
+    if (prev !== null) {
+      const d = t - prev;
+      if (d > jumpLimit) { dropped++; continue; }          // corrupt stamp
+      if (d < 0) {                                          // session restart
+        offset += prev + med - t;
+        segments++;
+        boundaries.push(+(t + offset).toFixed(3));
+      }
+    }
+    const copy = [...r];
+    copy[ti] = +(t + offset).toFixed(3);
+    out.push(copy);
+    prev = t;
+  }
+  return { rows: out, segments, droppedRows: dropped, boundaries };
+}
+
+export function densify(input, { intervalMs = 100, holdFactor = 3, minHoldSec = 1, unknownHoldSec = 5 } = {}) {
+  const ti = input.timeIdx ?? 0;
+  if (!input.rows.length || ti < 0) return input;
+  const time = normalizeTime(input);
+  const parsed = { ...input, rows: time.rows };
+  const step = intervalMs / 1000;
+  const width = parsed.headers.length;
+  const medians = updateIntervals(parsed, ti);
+  // A channel that reported only once has no measurable interval. Holding it
+  // forever is the wrong default — it would fill the rest of the log with a
+  // single reading — so cap it at a short, explicit fallback.
+  const maxHold = medians.map(m => (m === null ? unknownHoldSec : Math.max(minHoldSec, m * holdFactor)));
+
+  const last = new Array(width).fill(null);
+  const seenAt = new Array(width).fill(-Infinity);
+  const out = [];
+  const t0 = Number(parsed.rows[0][ti]);
+  if (!Number.isFinite(t0)) return parsed;
+  let next = t0, tMax = t0, backward = 0;
+
+  const snapshot = at => {
+    const r = new Array(width).fill(null);
+    for (let i = 0; i < width; i++) if (at - seenAt[i] <= maxHold[i]) r[i] = last[i];
+    r[ti] = +at.toFixed(3);
+    return r;
+  };
+
+  for (const row of parsed.rows) {
+    const t = Number(row[ti]);
+    if (!Number.isFinite(t)) continue;
+    if (t < tMax) { backward++; continue; }   // out-of-order rows (seen at one log's tail)
+    tMax = t;
+    while (t >= next + step) { out.push(snapshot(next)); next += step; }
+    for (let i = 0; i < width; i++) {
+      if (row[i] === null || row[i] === undefined || row[i] === "") continue;
+      last[i] = row[i]; seenAt[i] = t;
+    }
+  }
+  out.push(snapshot(tMax));
+  return {
+    ...parsed,
+    rows: out,
+    resampled: { intervalMs, holdFactor, fromRows: input.rows.length, toRows: out.length,
+                 durationSec: +(tMax - t0).toFixed(2), outOfOrderRows: backward,
+                 sessions: time.segments, corruptTimestamps: time.droppedRows,
+                 sessionBoundaries: time.boundaries },
+  };
+}
+
+const num = (row, idx) => (idx === undefined ? null : (typeof row[idx] === "number" ? row[idx] : null));
+const avgOf = (row, idxs) => {
+  if (!idxs) return null;
+  const vals = (Array.isArray(idxs) ? idxs : [idxs]).map(i => num(row, i)).filter(v => v !== null);
+  return vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null;
+};
+
+// truthy for the various ways tools encode a flag column
+function isOn(v) {
+  if (typeof v === "number") return v !== 0;
+  if (typeof v === "string") return /^(1|true|yes|on|active|enabled)$/i.test(v.trim());
+  return false;
+}
+
+// ---------- filtering ----------
+// Trim data is only meaningful warmed up, in closed loop, out of power
+// enrichment, at steady state. Everything else is noise that will happily
+// produce a confident, wrong correction.
+export const DEFAULT_FILTERS = {
+  minEct: 160,
+  minEctUnit: "°F",   // the threshold's OWN unit — converted to the log's unit before comparing
+  maxTpsDelta: 2,     // % change between samples — steady state
+  maxRpmDelta: 200,   // RPM change between samples
+  minRpm: 500,        // running
+  requireClosedLoop: true,
+  excludePe: true,
+};
+
+export function filterRows(parsed, ch, opts = {}, channelUnits = {}) {
+  const f = { ...DEFAULT_FILTERS, ...opts };
+  const kept = [];
+  const warnings = [];
+  const rejected = { cold: 0, openLoop: 0, powerEnrich: 0, transient: 0, notRunning: 0, noTrimData: 0 };
+
+  // Convert the threshold into whatever unit the log actually reports, rather
+  // than converting every sample. If the log doesn't state a temperature unit
+  // we DISABLE the filter and say so — guessing here silently threw away a
+  // whole Celsius log before this was fixed.
+  const ectUnit = channelUnits.ect?.quantity === "temperature" ? channelUnits.ect.unit : null;
+  let ectThreshold = null;
+  if (ch.ect === undefined) {
+    warnings.push("No coolant-temperature channel in this log — the warmed-up filter was not applied.");
+  } else if (!ectUnit) {
+    warnings.push(`Coolant temperature has no unit in its header (“${parsed.headers[ch.ect]}”), so the warmed-up filter was disabled rather than guessed. Add units to the channel name, or set the threshold manually.`);
+  } else {
+    ectThreshold = {
+      value: +convert(f.minEct, f.minEctUnit, ectUnit).toFixed(1),
+      unit: ectUnit,
+      from: `${f.minEct} ${f.minEctUnit}`,
+      converted: ectUnit !== f.minEctUnit,
+    };
+  }
+
+  // Power enrichment with no PE flag and no closed-loop flag: commanded
+  // mixture stands in. Commanding richer than stoich IS power enrichment, so
+  // this is a sound proxy — but it is an inference, so it is only used when
+  // both real flags are absent, and it is reported rather than assumed.
+  let peProxy = null;
+  if (f.excludePe && ch.pe === undefined && ch.closedLoop === undefined && ch.commandedAfr !== undefined) {
+    const cmdHeader = parsed.headers[ch.commandedAfr];
+    const sample = parsed.rows.slice(0, 400).map(r => num(r, ch.commandedAfr)).filter(v => v !== null);
+    const s = detectScale(cmdHeader, sample);
+    if (s.scale === "lambda" || s.scale === "eq" || s.scale === "afr") {
+      const rich = v => (s.scale === "eq" ? v > 1.02 : s.scale === "afr" ? v / 14.7 < 0.98 : v < 0.98);
+      peProxy = { column: cmdHeader, scale: s.scale, basis: s.basis, test: rich };
+      warnings.push(`No power-enrichment or closed-loop flag in this log, so “${cmdHeader}” was used to detect PE instead: any sample commanding richer than stoichiometric is treated as power enrichment (${s.basis}). This is an inference — log Fuel System Status or a PE flag to remove the guesswork.`);
+    }
+  }
+
+  for (let i = 0; i < parsed.rows.length; i++) {
+    const row = parsed.rows[i], prev = parsed.rows[i - 1];
+    if (peProxy) {
+      const c = num(row, ch.commandedAfr);
+      if (c !== null && peProxy.test(c)) { rejected.powerEnrich++; continue; }
+    }
+    const rpm = num(row, ch.rpm);
+    if (rpm !== null && rpm < f.minRpm) { rejected.notRunning++; continue; }
+
+    const ect = num(row, ch.ect);
+    if (ectThreshold && ect !== null && ect < ectThreshold.value) { rejected.cold++; continue; }
+
+    if (f.requireClosedLoop && ch.closedLoop !== undefined && !isOn(row[ch.closedLoop])) { rejected.openLoop++; continue; }
+    if (f.excludePe && ch.pe !== undefined && isOn(row[ch.pe])) { rejected.powerEnrich++; continue; }
+
+    if (prev) {
+      const dTps = Math.abs((num(row, ch.tps) ?? 0) - (num(prev, ch.tps) ?? 0));
+      const dRpm = Math.abs((rpm ?? 0) - (num(prev, ch.rpm) ?? 0));
+      if (dTps > f.maxTpsDelta || dRpm > f.maxRpmDelta) { rejected.transient++; continue; }
+    }
+
+    const ltft = avgOf(row, ch.ltft), stft = avgOf(row, ch.stft);
+    if (ltft === null && stft === null) { rejected.noTrimData++; continue; }
+
+    kept.push({ row, ltft: ltft ?? 0, stft: stft ?? 0, total: (ltft ?? 0) + (stft ?? 0) });
+  }
+  return { kept, rejected, filters: f, totalRows: parsed.rows.length, ectThreshold, warnings,
+           peProxy: peProxy ? { column: peProxy.column, scale: peProxy.scale, basis: peProxy.basis } : null };
+}
+
+// ---------- 1D binning: trim vs a chosen axis (MAF Hz by default) ----------
+export function binByAxis(kept, ch, axisRole = "mafHz", binSize = 500, minSamples = 20) {
+  const axisIdx = ch[axisRole];
+  if (axisIdx === undefined) return { error: `no ${axisRole} channel found in this log` };
+  const bins = new Map();
+  for (const k of kept) {
+    const x = num(k.row, axisIdx);
+    if (x === null) continue;
+    const key = Math.floor(x / binSize) * binSize;
+    if (!bins.has(key)) bins.set(key, { from: key, to: key + binSize, n: 0, ltft: 0, stft: 0, total: 0 });
+    const b = bins.get(key);
+    b.n++; b.ltft += k.ltft; b.stft += k.stft; b.total += k.total;
+  }
+  return {
+    binSize, minSamples, axis: axisRole,
+    bins: [...bins.values()].sort((a, b) => a.from - b.from).map(b => ({
+      from: b.from, to: b.to, n: b.n,
+      avgLtft: +(b.ltft / b.n).toFixed(2),
+      avgStft: +(b.stft / b.n).toFixed(2),
+      avgTotal: +(b.total / b.n).toFixed(2),
+      // Positive trim = PCM adding fuel = MAF under-reporting airflow, so the
+      // MAF table value for this cell should go UP by the same proportion.
+      suggestedPct: +(b.total / b.n).toFixed(1),
+      multiplier: +((100 + b.total / b.n) / 100).toFixed(4),
+      enoughData: b.n >= minSamples,
+    })),
+  };
+}
+
+// ---------- 2D heat map: average value over an X/Y grid ----------
+export function heatmap(kept, ch, xRole, yRole, xBin, yBin, minSamples = 5) {
+  const xi = ch[xRole], yi = ch[yRole];
+  if (xi === undefined || yi === undefined) return { error: `need both ${xRole} and ${yRole} in the log` };
+  const cells = new Map();
+  for (const k of kept) {
+    const x = num(k.row, xi), y = num(k.row, yi);
+    if (x === null || y === null) continue;
+    const xk = Math.floor(x / xBin) * xBin, yk = Math.floor(y / yBin) * yBin;
+    const key = `${xk}|${yk}`;
+    if (!cells.has(key)) cells.set(key, { x: xk, y: yk, n: 0, sum: 0 });
+    const c = cells.get(key);
+    c.n++; c.sum += k.total;
+  }
+  const list = [...cells.values()].map(c => ({ x: c.x, y: c.y, n: c.n, avg: +(c.sum / c.n).toFixed(2), enoughData: c.n >= minSamples }));
+  return {
+    xRole, yRole, xBin, yBin, minSamples, cells: list,
+    xs: [...new Set(list.map(c => c.x))].sort((a, b) => a - b),
+    ys: [...new Set(list.map(c => c.y))].sort((a, b) => b - a),
+  };
+}
+
+// ---------- wideband ----------
+// Three scales are in play and two of them look identical in a log:
+//   AFR    ~10–20      (gasoline; scale is fuel-dependent)
+//   lambda ~0.7–1.3    1.0 = stoich, BELOW 1 = rich
+//   EQ     ~0.7–1.4    1.0 = stoich, ABOVE 1 = rich   (GM's commanded EQ = 1/lambda)
+// lambda and EQ cannot be told apart by range, so: use the unit in the header
+// if it states one, otherwise infer AFR-vs-ratio from magnitude and SAY which
+// assumption was made. Never quietly pick between lambda and EQ.
+export function detectScale(header, sampleValues) {
+  const full = String(header || "");
+  // A declared unit outranks the channel name. Real case: an AEM channel named
+  // "WB EQ Ratio 1" whose logged unit is λ — the name and the unit disagree,
+  // and believing the name would inverse the mixture (λ 0.85 is rich, EQ 0.85
+  // is lean). The unit comes from the logging tool; the name is user-typed.
+  const declared = full.match(/\[([^\]]+)\]\s*$/)?.[1]?.trim().toLowerCase() || null;
+  const name = full.replace(/\s*\[[^\]]*\]\s*$/, "").toLowerCase();
+  const fromUnit = declared === null ? null
+    : /^(λ|lambda)$/.test(declared) ? "lambda"
+    : /^(eq|equiv)/.test(declared) ? "eq"
+    : /^afr$/.test(declared) ? "afr" : null;
+  const fromName = /\blambda\b|λ/.test(name) ? "lambda"
+    : /\beq\b|equiv/.test(name) ? "eq"
+    : /\bafr\b/.test(name) ? "afr" : null;
+
+  if (fromUnit) {
+    return fromName && fromName !== fromUnit
+      ? { scale: fromUnit, basis: `declared unit “${declared}” — note the channel name says ${fromName.toUpperCase()}; the unit was trusted`, nameConflict: { name: fromName, unit: fromUnit } }
+      : { scale: fromUnit, basis: `declared unit “${declared}”` };
+  }
+  if (fromName) return { scale: fromName, basis: "stated in the channel name" };
+  const vals = sampleValues.filter(Number.isFinite);
+  if (!vals.length) return { scale: null, basis: "no numeric samples" };
+  const med = vals.slice().sort((a, b) => a - b)[Math.floor(vals.length / 2)];
+  if (med > 5) return { scale: "afr", basis: `inferred from magnitude (median ${med.toFixed(2)})` };
+  return { scale: "ratio-ambiguous", basis: `values near 1.0 (median ${med.toFixed(3)}) — could be lambda or EQ; assuming lambda`, assumedLambda: true };
+}
+
+/** Everything is compared in lambda: 1.0 = stoich, <1 rich, >1 lean. */
+export function toLambda(value, scale, stoich) {
+  if (value == null || !Number.isFinite(value)) return null;
+  if (scale === "afr") return value / stoich;
+  if (scale === "eq") return value === 0 ? null : 1 / value;
+  return value;                       // lambda, or ratio assumed to be lambda
+}
+
+export function analyzeWideband(parsed, ch, channelUnits, opts = {}) {
+  const wbIdx = ch.widebandAfr, cmdIdx = ch.commandedAfr;
+  if (wbIdx === undefined) return { present: false, reason: "no wideband channel found in this log" };
+
+  const fuel = FUELS[opts.fuel] || FUELS.gasoline;
+  const col = i => parsed.rows.map(r => num(r, i)).filter(v => v !== null);
+  const wbScale = opts.widebandScale
+    ? { scale: opts.widebandScale, basis: "set manually" }
+    : detectScale(parsed.headers[wbIdx], col(wbIdx).slice(0, 400));
+  const cmdScale = cmdIdx === undefined ? null : (opts.commandedScale
+    ? { scale: opts.commandedScale, basis: "set manually" }
+    : detectScale(parsed.headers[cmdIdx], col(cmdIdx).slice(0, 400)));
+
+  const leanLimit = opts.wotLeanLambda ?? 1.0;     // λ at high load that warrants attention
+  const wotTps = opts.wotTps ?? 80;                 // % throttle counted as WOT
+
+  const wotByRpm = new Map();
+  let wotSamples = 0, leanWotSamples = 0, worstWot = null;
+  const clPairs = [];
+  const clProxy = ch.closedLoop === undefined && cmdIdx !== undefined
+    && (cmdScale.scale === "lambda" || cmdScale.scale === "eq" || cmdScale.scale === "afr");
+
+  for (const row of parsed.rows) {
+    const wb = toLambda(num(row, wbIdx), wbScale.scale, fuel.stoich);
+    if (wb === null) continue;
+    const cmd = cmdIdx === undefined ? null : toLambda(num(row, cmdIdx), cmdScale.scale, fuel.stoich);
+    const tps = num(row, ch.tps);
+    const rpm = num(row, ch.rpm);
+    const pe = ch.pe !== undefined && isOn(row[ch.pe]);
+    // With no Fuel System Status channel, commanding stoichiometric IS the
+    // closed-loop condition — the PCM only targets λ 1.00 when it is trimming
+    // to the narrowband. Reported as an inference, never assumed silently.
+    const cl = ch.closedLoop !== undefined ? isOn(row[ch.closedLoop])
+      : (clProxy && cmd !== null ? Math.abs(cmd - 1) <= 0.01 : null);
+    const atWot = pe || (tps !== null && tps >= wotTps);
+
+    if (atWot && rpm !== null) {
+      // This is the region trims can't see and where lean actually hurts.
+      const key = Math.floor(rpm / 500) * 500;
+      if (!wotByRpm.has(key)) wotByRpm.set(key, { from: key, to: key + 500, n: 0, sumWb: 0, sumCmd: 0, nCmd: 0, leanest: null });
+      const b = wotByRpm.get(key);
+      b.n++; b.sumWb += wb;
+      if (cmd !== null) { b.sumCmd += cmd; b.nCmd++; }
+      if (b.leanest === null || wb > b.leanest) b.leanest = wb;
+      wotSamples++;
+      if (wb > leanLimit) leanWotSamples++;
+      if (!worstWot || wb > worstWot.lambda) worstWot = { lambda: +wb.toFixed(3), rpm, tps, commanded: cmd === null ? null : +cmd.toFixed(3) };
+    }
+    if (cl === true && !pe && cmd !== null) clPairs.push({ wb, cmd });
+  }
+
+  const asAfr = l => +(l * fuel.stoich).toFixed(2);
+  const wot = [...wotByRpm.values()].sort((a, b) => a.from - b.from).map(b => ({
+    from: b.from, to: b.to, n: b.n,
+    avgLambda: +(b.sumWb / b.n).toFixed(3),
+    avgAfr: asAfr(b.sumWb / b.n),
+    commandedLambda: b.nCmd ? +(b.sumCmd / b.nCmd).toFixed(3) : null,
+    commandedAfr: b.nCmd ? asAfr(b.sumCmd / b.nCmd) : null,
+    errorPct: b.nCmd ? +(((b.sumWb / b.n) / (b.sumCmd / b.nCmd) - 1) * 100).toFixed(1) : null,
+    leanestLambda: +b.leanest.toFixed(3),
+    lean: (b.sumWb / b.n) > leanLimit,
+  }));
+
+  // Closed-loop cross-check: the narrowband can be happy while the wideband isn't.
+  let closedLoopCheck = null;
+  if (clPairs.length >= 20) {
+    const avgWb = clPairs.reduce((s, p) => s + p.wb, 0) / clPairs.length;
+    const avgCmd = clPairs.reduce((s, p) => s + p.cmd, 0) / clPairs.length;
+    closedLoopCheck = {
+      samples: clPairs.length,
+      avgMeasuredLambda: +avgWb.toFixed(3), avgCommandedLambda: +avgCmd.toFixed(3),
+      avgMeasuredAfr: asAfr(avgWb), avgCommandedAfr: asAfr(avgCmd),
+      errorPct: +((avgWb / avgCmd - 1) * 100).toFixed(1),
+    };
+  }
+
+  return {
+    present: true,
+    channel: parsed.headers[wbIdx],
+    commandedChannel: cmdIdx === undefined ? null : parsed.headers[cmdIdx],
+    scale: wbScale, commandedScale: cmdScale,
+    fuel: { key: opts.fuel || "gasoline", ...fuel },
+    wotDefinition: { pePreferred: ch.pe !== undefined, tpsThresholdPct: wotTps, leanLimitLambda: leanLimit },
+    wotSamples, leanWotSamples,
+    worstWot,
+    wot,
+    closedLoopCheck,
+    closedLoopBasis: ch.closedLoop !== undefined
+      ? `Fuel System Status channel (${parsed.headers[ch.closedLoop]})`
+      : clProxy ? `inferred: commanded mixture within 1% of stoichiometric (“${parsed.headers[cmdIdx]}”) — no Fuel System Status channel was logged`
+      : null,
+    units: { lambda: "λ (1.00 = stoich, below 1 rich)", afr: `AFR (stoich ${fuel.stoich} for ${fuel.label})`, error: "%" },
+    note: "Lambda is the comparison basis; AFR is derived using the selected fuel's stoichiometric ratio. Draft readings — confirm the wideband's scale and your fuel before acting on them.",
+  };
+}
+
+// ---------- spark & knock ----------
+// Different rules from fuelling: knock matters most exactly where the fuel
+// filters throw data away (WOT, power enrichment), so this pass keeps those
+// rows. Cells report MAX knock retard, never the average — averaging a 6°
+// spike among zeros hides the event you needed to see.
+export function analyzeSpark(parsed, ch, channelUnits, opts = {}) {
+  const krIdx = ch.knockRetard;
+  if (krIdx === undefined && ch.spark === undefined)
+    return { present: false, reason: "no knock-retard or spark-advance channel in this log" };
+
+  const yRole = ch.map !== undefined ? "map" : (ch.load !== undefined ? "load" : null);
+  const rpmBin = opts.sparkRpmBin || 500;
+  const loadBin = opts.sparkLoadBin || 10;
+  const krThreshold = opts.krThreshold ?? 0.1;     // ° of retard that counts as knock
+
+  const krCells = new Map(), sparkCells = new Map();
+  const events = [];
+  let cur = null, krSamples = 0, worst = null, running = 0;
+
+  for (let i = 0; i < parsed.rows.length; i++) {
+    const row = parsed.rows[i];
+    const rpm = num(row, ch.rpm);
+    if (rpm !== null && rpm < 500) { if (cur) { events.push(cur); cur = null; } continue; }
+    running++;
+    const y = yRole ? num(row, ch[yRole]) : null;
+    const kr = krIdx === undefined ? null : num(row, krIdx);
+    const adv = ch.spark === undefined ? null : num(row, ch.spark);
+    const iat = num(row, ch.iat), ect = num(row, ch.ect), tps = num(row, ch.tps);
+
+    if (rpm !== null && y !== null) {
+      const key = `${Math.floor(rpm / rpmBin) * rpmBin}|${Math.floor(y / loadBin) * loadBin}`;
+      if (kr !== null) {
+        const c = krCells.get(key) || { x: Math.floor(rpm / rpmBin) * rpmBin, y: Math.floor(y / loadBin) * loadBin, n: 0, max: 0, hits: 0 };
+        c.n++; if (kr > c.max) c.max = kr;
+        if (kr >= krThreshold) c.hits++;
+        krCells.set(key, c);
+      }
+      if (adv !== null) {
+        const c = sparkCells.get(key) || { x: Math.floor(rpm / rpmBin) * rpmBin, y: Math.floor(y / loadBin) * loadBin, n: 0, sum: 0, max: -Infinity };
+        c.n++; c.sum += adv; if (adv > c.max) c.max = adv;
+        sparkCells.set(key, c);
+      }
+    }
+
+    // contiguous run of retard = one knock event
+    if (kr !== null && kr >= krThreshold) {
+      krSamples++;
+      if (!cur) cur = { startRow: i, samples: 0, peakKr: 0, rpmAt: rpm, rpmMin: rpm, rpmMax: rpm, load: y, iat, ect, tps, spark: adv };
+      cur.samples++;
+      if (kr > cur.peakKr) { cur.peakKr = kr; cur.rpmAt = rpm; cur.load = y; cur.iat = iat; cur.spark = adv; }
+      if (rpm !== null) { cur.rpmMin = Math.min(cur.rpmMin ?? rpm, rpm); cur.rpmMax = Math.max(cur.rpmMax ?? rpm, rpm); }
+      if (!worst || kr > worst.kr) worst = { kr: +kr.toFixed(2), rpm, load: y, iat, spark: adv, tps };
+    } else if (cur) { events.push(cur); cur = null; }
+  }
+  if (cur) events.push(cur);
+
+  const round = (v, d = 2) => (v == null ? null : +v.toFixed(d));
+  const evs = events.map(e => ({
+    samples: e.samples, peakKr: round(e.peakKr), rpm: e.rpmAt,
+    rpmRange: e.rpmMin === e.rpmMax ? `${e.rpmMin}` : `${e.rpmMin}–${e.rpmMax}`,
+    load: round(e.load, 1), iat: round(e.iat, 1), ect: round(e.ect, 1),
+    tps: round(e.tps, 1), sparkAtPeak: round(e.spark, 1),
+    // Knock under light load rarely is knock — rough road and drivetrain
+    // noise fool the sensors. Flag it for a human rather than judging it.
+    suspectFalse: e.tps !== null && e.tps < 25,
+  })).sort((a, b) => b.peakKr - a.peakKr);
+
+  const krList = [...krCells.values()].map(c => ({ ...c, max: round(c.max) }));
+  const sparkList = [...sparkCells.values()].map(c => ({ x: c.x, y: c.y, n: c.n, avg: round(c.sum / c.n, 1), max: round(c.max, 1) }));
+  const axes = list => ({
+    xs: [...new Set(list.map(c => c.x))].sort((a, b) => a - b),
+    ys: [...new Set(list.map(c => c.y))].sort((a, b) => b - a),
+  });
+
+  return {
+    present: true,
+    hasKnockChannel: krIdx !== undefined,
+    hasSparkChannel: ch.spark !== undefined,
+    krChannel: krIdx === undefined ? null : parsed.headers[krIdx],
+    sparkChannel: ch.spark === undefined ? null : parsed.headers[ch.spark],
+    yRole, yUnit: yRole ? (channelUnits[yRole]?.unit ?? null) : null,
+    rpmBin, loadBin, krThreshold,
+    runningSamples: running,
+    krSamples,
+    eventCount: evs.length,
+    worst,
+    events: evs.slice(0, 25),
+    krMap: krCells.size ? { cells: krList, ...axes(krList), valueUnit: "° crank (max retard in cell)" } : null,
+    sparkMap: sparkCells.size ? { cells: sparkList, ...axes(sparkList), valueUnit: "° crank (average advance)" } : null,
+    units: { kr: "° crank", spark: "° crank", load: yRole ? (channelUnits[yRole]?.unit ?? "unit not stated") : null },
+    note: "Knock-retard cells show the MAXIMUM in each cell, not the average — a single hard event matters more than a quiet average. Draft readings.",
+  };
+}
+
+export function analyze(text, opts = {}) {
+  const raw = parseCsv(text);
+  if (!raw.headers.length) return { error: "no data rows in this CSV" };
+  // Interval-logged files have no row where all the needed channels coexist,
+  // so they must be put on a common time base before anything else runs.
+  const parsed = raw.sparse ? densify(raw, { intervalMs: opts.intervalMs || 100 }) : raw;
+  const chAll = { ...detectChannels(parsed.headers), ...(opts.channels || {}) };
+
+  // A channel can be present in the header and carry no data at all — the
+  // wideband was configured but never reported, and so was Fuel System Status.
+  // Left in place, an empty closed-loop flag reads as "not in closed loop" on
+  // every row and silently rejects the entire log. Drop them and say so.
+  const hasData = i => i !== undefined && parsed.rows.some(r => typeof r[i] === "number");
+  const candidates = detectCandidates(parsed.headers);
+  const ch = {}, silentChannels = [];
+  for (const [role, idx] of Object.entries(chAll)) {
+    if (Array.isArray(idx)) {                       // trims: keep every live bank
+      const live = idx.filter(hasData);
+      if (live.length) ch[role] = live;
+      else silentChannels.push({ role, column: parsed.headers[idx[0]] });
+      continue;
+    }
+    // Single-column role: prefer the first candidate that actually reported.
+    // Three wideband channels were configured on this car and only the analog
+    // one carried data — taking the first match would have found nothing.
+    const overridden = opts.channels && role in opts.channels;
+    const pool = overridden ? [idx] : (candidates[role] || [idx]);
+    const live = pool.find(hasData);
+    if (live !== undefined) {
+      ch[role] = live;
+      for (const dead of pool.filter(i => i !== live && !hasData(i)))
+        silentChannels.push({ role, column: parsed.headers[dead], superseded: parsed.headers[live] });
+    } else silentChannels.push({ role, column: parsed.headers[pool[0]] });
+  }
+
+  // Unit per detected channel, read from its header. Unknown stays unknown.
+  const channelUnits = {};
+  for (const [role, idx] of Object.entries(ch)) {
+    const i = Array.isArray(idx) ? idx[0] : idx;
+    const header = parsed.headers[i];
+    const u = header ? detectUnit(header) : null;
+    channelUnits[role] = { column: header, unit: u?.unit ?? null, quantity: u?.quantity ?? null, convertible: !!u?.convertible };
+  }
+
+  const missing = ["mafHz", "ltft", "stft", "ect", "closedLoop", "pe", "tps", "rpm"].filter(r => ch[r] === undefined);
+  const filtered = filterRows(parsed, ch, opts.filters, channelUnits);
+  for (const s of silentChannels)
+    filtered.warnings.push(s.superseded
+      // a dead channel that another live column covers is a note, not a gap
+      ? `“${s.column}” was logged but contains no samples — “${s.superseded}” is being used for ${s.role} instead. Worth removing the dead channel from the layout.`
+      : `“${s.column}” was logged but contains no samples, so the ${s.role} check was skipped. The channel is in your scanner layout but the device never reported.`);
+  const yRole = ch.map !== undefined ? "map" : "load";
+  return {
+    headers: parsed.headers,
+    channels: Object.fromEntries(Object.entries(ch).map(([k, v]) =>
+      [k, Array.isArray(v) ? v.map(i => parsed.headers[i]) : parsed.headers[v]])),
+    channelUnits,
+    missingChannels: missing,
+    format: raw.format,
+    resampled: parsed.resampled || null,
+    silentChannels,
+    emptyChannels: parsed.headers
+      .map((h, i) => (parsed.rows.some(r => typeof r[i] === "number") ? null : h))
+      .filter(Boolean),
+    rowCount: parsed.rows.length,
+    keptCount: filtered.kept.length,
+    rejected: filtered.rejected,
+    filters: filtered.filters,
+    ectThreshold: filtered.ectThreshold,
+    peProxy: filtered.peProxy,
+    warnings: filtered.warnings,
+    mafBins: {
+      ...binByAxis(filtered.kept, ch, "mafHz", opts.binSize || 500, opts.minSamples || 20),
+      axisUnit: channelUnits.mafHz?.unit ?? "Hz",
+      valueUnit: "%",
+      multiplierUnit: "dimensionless ratio",
+    },
+    heat: {
+      ...heatmap(filtered.kept, ch, "rpm", yRole, 500, 10, 5),
+      xUnit: channelUnits.rpm?.unit ?? "RPM",
+      yUnit: channelUnits[yRole]?.unit ?? null,
+      valueUnit: "%",
+    },
+    wideband: analyzeWideband(parsed, ch, channelUnits, opts),
+    spark: analyzeSpark(parsed, ch, channelUnits, opts),
+    note: "Draft readings for review. Suggestions are computed from filtered log data and must be applied by hand after you agree with them — nothing here writes to a tune.",
+  };
+}

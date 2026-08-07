@@ -1,0 +1,39 @@
+name: CI
+
+# Public-repo CI. The upstream private repo's workflow also runs the starter-kit
+# export and its personal-data leak sweep; neither exists here, so this is the
+# tests plus the submission guards.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Unit tests (analysis maths)
+        run: node scripts/test.mjs
+
+      - name: No calibration binaries in the tree
+        run: |
+          if find . -path ./.git -prune -o \( -name '*.bin' -o -name '*.hpt' -o -name '*.hpl' \) -print | grep .; then
+            echo "Calibration files must never be committed here — see CONTRIBUTING.md"
+            exit 1
+          fi
+          echo "Clean."
+
+      - name: Submitted logs are scrubbed
+        run: |
+          logs=$(find submissions -name '*.csv' 2>/dev/null || true)
+          if [ -z "$logs" ]; then echo "No submitted logs."; exit 0; fi
+          # shellcheck disable=SC2086
+          node scripts/scrub-log.mjs --check $logs
+
+      - name: Smoke test the app
+        run: |
+          PORT=4599 node app/server.mjs &
+          PORT=4599 node scripts/smoke.mjs

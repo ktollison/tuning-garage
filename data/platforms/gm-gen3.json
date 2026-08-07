@@ -1,0 +1,76 @@
+{
+  "id": "gm-gen3",
+  "name": "GM Gen III (1997–2007 LS-era V8, 4.3/5.3/6.0 truck engines)",
+  "pcms": [
+    {
+      "model": "P01",
+      "aka": "0411 (service no. 12200411 et al.)",
+      "flash": "512 KB",
+      "years": "1999–2003 cars/trucks",
+      "pcmhammer": "mature — full read/write, clone, datalog"
+    },
+    {
+      "model": "P59",
+      "aka": "1 MB successor",
+      "flash": "1024 KB",
+      "years": "2003–2007",
+      "pcmhammer": "mature — full read/write, clone, datalog"
+    },
+    {
+      "model": "P04/P05/P08/P10/P11/P12/E38/E54/BlackBox",
+      "flash": "varies",
+      "years": "varies",
+      "pcmhammer": "experimental — check current release notes before relying on it"
+    }
+  ],
+  "binFormat": {
+    "osIdOffset": "0x504 (uint32 big-endian, decimal part number)",
+    "segmentTable": "0x514 — seven {start,end} uint32 BE pairs (EngineCal, EngineDiag, TransCal, TransDiag, Fuel, System, Speedo)",
+    "checksums": "16-bit two's-complement big-endian word sums, stored at each segment start (OS at 0x500)",
+    "source": "PCMBinBuilder / UniversalPatcher (github.com/joukoy), pcmhacking.net thread t=6240"
+  },
+  "adapters": [
+    {
+      "device": "A VPW-capable J2534 interface you have proven",
+      "notes": "The only rule that matters for writes. Must genuinely implement J1850 VPW; 4x support turns a 30-minute read into a few minutes. Prove it on something you can afford to lose before trusting it with a write."
+    },
+    {
+      "device": "Commercial suite interface (MPVI3, FlashScan, …)",
+      "notes": "Native to its own software; many also work as a general J2534 pass-thru."
+    },
+    {
+      "device": "Dedicated VPW adapters",
+      "notes": "Purpose-built interfaces with 4x support are the community's usual recommendation for PCMHammer — see pcmhammer.github.io/users/supported-devices."
+    },
+    {
+      "device": "Slower J2534 / ELM-class devices",
+      "notes": "Often work at 1x only: a 512 KB full read takes 30+ minutes, so a battery maintainer is mandatory."
+    },
+    {
+      "device": "Interfaces that claim VPW without implementing it",
+      "notes": "Several exist, and some cheap clones omit the J1850 circuitry entirely. Check community reports for your exact model before buying."
+    }
+  ],
+  "links": [
+    {
+      "name": "PCM Hammer",
+      "url": "https://github.com/PcmHammer/PcmHammer"
+    },
+    {
+      "name": "PCM Hammer user docs",
+      "url": "https://pcmhammer.github.io/users/"
+    },
+    {
+      "name": "UniversalPatcher",
+      "url": "https://github.com/joukoy/UniversalPatcher"
+    },
+    {
+      "name": "pcmhacking.net Gen III forum",
+      "url": "https://pcmhacking.net/forums/"
+    },
+    {
+      "name": "P01/P59 bin internals thread",
+      "url": "https://pcmhacking.net/forums/viewtopic.php?t=6240"
+    }
+  ]
+}

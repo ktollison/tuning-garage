@@ -1,0 +1,85 @@
+name: Submit a datalog
+description: Send a scrubbed CSV so the analyser can be tested and improved against it
+title: "[log] "
+labels: ["submission", "datalog"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks — real logs are the single most useful thing you can contribute.
+
+        **Before you attach anything**, scrub it:
+
+        ```bash
+        node scripts/scrub-log.mjs --check yourlog.csv
+        ```
+
+        Anything posted here is **public immediately** and cannot be truly
+        withdrawn. Do not attach `.bin`, `.hpt` or `.hpl` files — they contain
+        the manufacturer's calibration and your VIN, and they will be deleted.
+
+  - type: upload
+    id: log
+    attributes:
+      label: The datalog
+      description: Scrubbed CSV. Zip it if it is over 25 MB.
+    validations:
+      required: true
+      accept: ".csv,.log,.zip"
+
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      description: Controller/generation, and the OS ID if you know it
+      placeholder: "GM Gen III P01, OS 12587603"
+    validations:
+      required: true
+
+  - type: input
+    id: vehicle
+    attributes:
+      label: Vehicle
+      description: Year, engine, transmission. No VIN.
+      placeholder: "2002 Camaro, 5.7 LS1, manual"
+
+  - type: dropdown
+    id: tool
+    attributes:
+      label: Logged with
+      options:
+        - HP Tuners VCM Scanner
+        - PCMHammer
+        - UniversalPatcher
+        - Other (say below)
+    validations:
+      required: true
+
+  - type: input
+    id: wideband
+    attributes:
+      label: Wideband, if any
+      description: Controller and how it connects — analog, CAN, or serial. This matters more than it sounds.
+      placeholder: "a CAN wideband controller, analog into the MPVI ProLink"
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What is in the log, and what looks wrong
+      description: Cruise, WOT pull, idle? If the app read it incorrectly, say what you expected.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: Confirmations
+      options:
+        - label: I ran `scrub-log.mjs --check` and it reported nothing
+          required: true
+        - label: I opened the file and it contains no VIN, address or personal note
+          required: true
+        - label: This is a log from my own vehicle
+          required: true
+        - label: I am contributing it under GPL-3.0
+          required: true

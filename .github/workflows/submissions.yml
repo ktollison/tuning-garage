@@ -1,0 +1,84 @@
+name: Submissions
+
+# Validates contributed logs and data, and reports what the analyser made of
+# them. Runs on PRs from forks, so it is deliberately read-only: no checkout of
+# untrusted code is executed, only data files are read.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Changed files
+        id: changed
+        run: |
+          base="${{ github.event.pull_request.base.sha }}"
+          head="${{ github.event.pull_request.head.sha }}"
+          git diff --name-only --diff-filter=d "$base" "$head" > /tmp/changed.txt
+          echo "Changed:"; cat /tmp/changed.txt
+
+      # Refused outright: calibrations carry the manufacturer's copyrighted data
+      # and, on Gen III, the VIN in the EEPROM block.
+      - name: Refuse calibration binaries
+        run: |
+          if grep -Ei '\.(bin|hpt|hpl|xdf)$' /tmp/changed.txt > /tmp/refused.txt; then
+            {
+              echo "### Cannot accept these files"
+              echo
+              sed 's/^/- `/; s/$/`/' /tmp/refused.txt
+              echo
+              echo "Calibration files carry the manufacturer's copyrighted data, and a Gen III"
+              echo "bin holds your VIN in the EEPROM block. \`.xdf\` definitions are only"
+              echo "accepted from their author. See CONTRIBUTING.md."
+            } > /tmp/comment.md
+            cat /tmp/comment.md >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "No refused file types."
+
+      - name: Scrub check on submitted logs
+        run: |
+          logs=$(grep -E '\.csv$' /tmp/changed.txt || true)
+          if [ -z "$logs" ]; then echo "No CSVs in this PR."; exit 0; fi
+          # shellcheck disable=SC2086
+          node scripts/scrub-log.mjs --check $logs
+
+      - name: Unit tests
+        run: node scripts/test.mjs
+
+      - name: Analyse submitted logs
+        if: success()
+        run: |
+          logs=$(grep -E '\.csv$' /tmp/changed.txt || true)
+          if [ -z "$logs" ]; then echo "no-logs" > /tmp/analysis.md; exit 0; fi
+          node scripts/analyse-submission.mjs $logs > /tmp/analysis.md
+          cat /tmp/analysis.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Comment with the analysis
+        if: success()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            let body;
+            try { body = fs.readFileSync('/tmp/analysis.md', 'utf8'); } catch { return; }
+            if (!body.trim() || body.trim() === 'no-logs') return;
+            const { owner, repo } = context.repo;
+            const issue_number = context.payload.pull_request.number;
+            const marker = '<!-- submission-analysis -->';
+            const existing = (await github.rest.issues.listComments({ owner, repo, issue_number }))
+              .data.find(c => c.body.includes(marker));
+            const content = `${marker}\n${body}`;
+            if (existing) await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body: content });
+            else await github.rest.issues.createComment({ owner, repo, issue_number, body: content });
