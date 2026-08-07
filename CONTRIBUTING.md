@@ -104,6 +104,20 @@ it under this project's licence — the
 [Developer Certificate of Origin](https://developercertificate.org/). There is
 no CLA to sign; contributions are simply under GPL-3.0, same as the rest.
 
+## Repository rules
+
+`main` is protected:
+
+- **CI must pass.** Tests, the no-binaries check and the scrub check all run on
+  every pull request.
+- **History cannot be rewritten** — no force pushes, no branch deletion.
+- **Conversations must be resolved** before a pull request merges.
+- **Commits must be signed off.** The web editor enforces this; from the
+  command line use `git commit -s`.
+
+Work on a branch or a fork and open a pull request. Nothing is merged with red
+CI, least of all anything touching the analysis maths.
+
 ## Licence
 
 This project is **GPL-3.0** — see [LICENSE](LICENSE) and
