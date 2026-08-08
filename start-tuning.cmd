@@ -25,7 +25,15 @@ goto done
 
 :stale
 echo Restarting so the new code takes effect...
-for /f "tokens=5" %%p in ('netstat -ano ^| findstr /r /c:"TCP .*:%PORT% .*LISTENING"') do taskkill /f /pid %%p >nul 2>&1
+rem Find the owning process via PowerShell rather than parsing netstat. findstr
+rem cannot do this reliably: "/r /c:" mixes regex and literal matching, and
+rem findstr treats /c: as literal, so a pattern like ".*:4590 .*LISTENING" never
+rem matches - the kill would quietly do nothing and the restart would then fail
+rem to bind. Get-NetTCPConnection asks the OS directly. PowerShell is already a
+rem dependency of this script.
+rem written without pipe characters, per the note further down: this file keeps
+rem PowerShell one-liners pipe-free so cmd's parsing cannot get involved
+powershell -NoProfile -Command "$c = Get-NetTCPConnection -LocalPort %PORT% -State Listen -ErrorAction SilentlyContinue; foreach ($x in $c) { Stop-Process -Id $x.OwningProcess -Force -ErrorAction SilentlyContinue }"
 rem give the port a moment to free up before rebinding
 ping -n 3 127.0.0.1 >nul
 goto start
