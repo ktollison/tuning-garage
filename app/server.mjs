@@ -21,7 +21,7 @@ import { detectUnit, convert, DEFAULT_PREFERENCES, QUANTITIES } from "./modules/
 import * as scanner from "./modules/vcmscanner.mjs";
 
 const execFileP = promisify(execFile);
-const APP_VERSION = "0.32.1"; // keep in step with CHANGELOG.md — CI enforces the match
+const APP_VERSION = "0.33.0"; // keep in step with CHANGELOG.md — CI enforces the match
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(process.env.TUNING_REPO || path.join(__dirname, ".."));
 const PUBLIC = path.join(__dirname, "public");
@@ -37,6 +37,25 @@ const MIME = {
 // ---------- helpers ----------
 
 const today = () => new Date().toISOString().slice(0, 10);
+
+// macOS evicts the CONTENTS of iCloud-synced files while keeping their
+// metadata, leaving a "dataless" file: correct size, zero allocated blocks. A
+// foreground app triggers download on read; a background launchd agent gets
+// EAGAIN ("Unknown system error -11") instead. The file looks present in every
+// listing and simply cannot be read — which is exactly how a stock read
+// appears to vanish. Name it, because the raw errno explains nothing.
+async function describeReadError(file, e) {
+  const code = e.code || e.message;
+  try {
+    const st = await fsp.stat(file);
+    if (st.size > 0 && st.blocks === 0)
+      return `${path.relative(REPO, file)} is in iCloud but its contents are not on this Mac `
+           + `(evicted, ${st.size} bytes, 0 blocks). The file is not lost — run `
+           + `\`brctl download "${path.relative(REPO, file)}"\`, and consider moving this repo `
+           + `out of ~/Documents so iCloud stops evicting it.`;
+  } catch { /* fall through to the plain message */ }
+  return `Cannot read ${path.relative(REPO, file)}: ${code}`;
+}
 
 function safeJoin(root, rel) {
   const p = path.resolve(root, rel);
@@ -91,7 +110,7 @@ async function listFiles(dir, { withHash = false } = {}) {
   } catch (e) {
     if (e.code === "ENOENT") return [];      // genuinely not there yet
     console.error(`listFiles: cannot read ${dir}: ${e.code || e.message}`);
-    const err = new Error(`Could not read ${path.relative(REPO, dir)}: ${e.code || e.message}`);
+    const err = new Error(await describeReadError(dir, e));
     err.listFailure = true;
     throw err;
   }
@@ -109,7 +128,9 @@ async function listFiles(dir, { withHash = false } = {}) {
       try { entry.sha256 = await fileSha(p, st); }
       catch (e) {
         entry.sha256 = null;
-        entry.hashError = e.code || e.message;
+        entry.hashError = st.size > 0 && st.blocks === 0
+          ? "contents not on this Mac (iCloud evicted) — run brctl download"
+          : (e.code || e.message);
         console.error(`listFiles: cannot hash ${p}: ${entry.hashError}`);
       }
     }
@@ -226,6 +247,10 @@ async function buildTimeline(id) {
   }
 
   const flashed = new Set();
+  // If this cannot be read, `flashed` stays empty and every revision is then
+  // reported as "never flashed" — a confident, wrong claim about what is in
+  // the car. Absent is fine (nothing flashed yet); unreadable is not.
+  let flashLogReadable = true;
   try {
     const text = await fsp.readFile(path.join(base, "flash-log.md"), "utf8");
     for (const line of text.split("\n")) {
@@ -235,13 +260,20 @@ async function buildTimeline(id) {
       events.push({ date: m[1], type: "flash", rev: m[2], title: `Flashed ${m[2]}`,
         detail: [m[3], m[4] !== "—" ? m[4] : ""].filter(Boolean).join(" · ") });
     }
-  } catch {}
+  } catch (e) {
+    if (e.code !== "ENOENT") {
+      flashLogReadable = false;
+      console.error(`buildTimeline: cannot read flash-log.md for ${id}: ${e.code || e.message}`);
+    }
+  }
 
   events.sort((a, b) => (a.date === b.date ? 0 : a.date < b.date ? 1 : -1)); // newest first
 
   const revList = [...revs.keys()];
   const insights = {
-    revisionsNeverFlashed: revList.filter(r => !flashed.has(r)),
+    // suppressed rather than guessed when the flash log could not be read
+    flashLogUnreadable: !flashLogReadable,
+    revisionsNeverFlashed: flashLogReadable ? revList.filter(r => !flashed.has(r)) : [],
     revisionsWithoutLogs: revList.filter(r => !logsByRev.has(r)),
     // a log naming a revision that was never checked in — the file is orphaned
     orphanLogRevs: [...new Set(events.filter(e => e.type === "datalog" && e.rev && !revs.has(e.rev)).map(e => e.rev))],
@@ -357,11 +389,20 @@ function nextRev(tunes) {
 async function readPlatforms() {
   const dir = path.join(REPO, "data", "platforms");
   const out = [];
-  try {
-    for (const f of await fsp.readdir(dir)) {
-      if (f.endsWith(".json")) out.push(JSON.parse(await fsp.readFile(path.join(dir, f), "utf8")));
+  let names = [];
+  try { names = await fsp.readdir(dir); }
+  catch (e) { if (e.code !== "ENOENT") console.error(`readPlatforms: ${e.code || e.message}`); return out; }
+  // Parse each file on its own. Previously one malformed JSON threw out of the
+  // loop and every platform disappeared, with the bad file unnamed.
+  for (const f of names) {
+    if (!f.endsWith(".json")) continue;
+    try {
+      out.push(JSON.parse(await fsp.readFile(path.join(dir, f), "utf8")));
+    } catch (e) {
+      console.error(`readPlatforms: skipping ${f}: ${e.message}`);
+      out.push({ id: f.replace(/\.json$/, ""), name: f, error: `Could not load: ${e.message}` });
     }
-  } catch {}
+  }
   return out;
 }
 
@@ -400,8 +441,27 @@ async function readDefinitions() {
 const SCAN_DIR = path.join(REPO, "vcm-scanner");
 const SCAN_FOLDERS = { channels: "channels", charts: "charts", graphs: "graphs", layout: "layouts", math: "math" };
 
+// ENOENT means "not created yet" and the fallback is correct. EVERY other
+// failure — corrupt JSON, a permissions problem, a bad disk — must throw.
+//
+// This matters because every caller does read-modify-write: read the file,
+// change one entry, write the whole thing back. A read that quietly returns an
+// empty fallback is therefore not a display bug, it is data loss — the next
+// write erases the real contents. That is how eight user-math formulas could
+// have been destroyed by a single transient read error.
 async function readJsonOr(file, fallback) {
-  try { return JSON.parse(await fsp.readFile(file, "utf8")); } catch { return fallback; }
+  let text;
+  try {
+    text = await fsp.readFile(file, "utf8");
+  } catch (e) {
+    if (e.code === "ENOENT") return structuredClone(fallback);
+    throw new Error(await describeReadError(file, e));
+  }
+  try {
+    return JSON.parse(text);
+  } catch (e) {
+    throw new Error(`${path.relative(REPO, file)} is not valid JSON — refusing to overwrite it. ${e.message}`);
+  }
 }
 
 /** Parse every config, merge the dictionary, and attach index metadata. */
@@ -454,11 +514,18 @@ function mathParamToUserMath(m, sourceFile, dictionary, unitCodes) {
 // ---------- preferences (in the repo, so both machines agree) ----------
 const PREFS_FILE = path.join(REPO, "data", "preferences.json");
 
+// Preferences are the one file where falling back is better than failing: they
+// are cosmetic and regenerable, and refusing to serve the app over a corrupt
+// units setting would be a worse outcome. Still say so rather than sit silent.
 async function readPrefs() {
   try {
     const p = JSON.parse(await fsp.readFile(PREFS_FILE, "utf8"));
     return { ...DEFAULT_PREFERENCES, ...p, units: { ...DEFAULT_PREFERENCES.units, ...(p.units || {}) } };
-  } catch { return structuredClone(DEFAULT_PREFERENCES); }
+  } catch (e) {
+    if (e.code !== "ENOENT")
+      console.error(`readPrefs: ${path.relative(REPO, PREFS_FILE)} unreadable (${e.code || e.message}) — using defaults`);
+    return structuredClone(DEFAULT_PREFERENCES);
+  }
 }
 
 async function writePrefs(next) {
@@ -468,8 +535,13 @@ async function writePrefs(next) {
 
 // ---------- user math ----------
 
+// Deliberately strict: callers push onto data.parameters and write it back, so
+// an empty result from a failed read would wipe the repository.
 async function readUserMath() {
-  try { return JSON.parse(await fsp.readFile(USER_MATH, "utf8")); } catch { return { parameters: [] }; }
+  const data = await readJsonOr(USER_MATH, { parameters: [] });
+  if (!Array.isArray(data?.parameters))
+    throw new Error(`${path.relative(REPO, USER_MATH)} has no parameters array — refusing to overwrite it.`);
+  return data;
 }
 
 async function writeUserMath(data) {
@@ -1279,6 +1351,17 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(500, { "content-type": "application/json" });
     res.end(JSON.stringify({ error: e.message }));
   }
+});
+
+// Without these, one unhandled rejection anywhere takes the process down. Under
+// launchd that means a silent restart — the user sees a dropped request and the
+// only trace is a stack in app.err.log they have no reason to look at. Log
+// loudly and keep serving; a background failure should not lose the session.
+process.on("unhandledRejection", (reason) => {
+  console.error("UNHANDLED REJECTION —", reason?.stack || reason);
+});
+process.on("uncaughtException", (err) => {
+  console.error("UNCAUGHT EXCEPTION —", err?.stack || err);
 });
 
 server.listen(PORT, "127.0.0.1", () => {
