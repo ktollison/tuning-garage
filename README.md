@@ -180,7 +180,12 @@ run them yourself before changing anything under `app/modules/`.
   CHANGELOG entry or if `APP_VERSION` ≠ newest CHANGELOG release;
   `scripts/test.mjs` runs the analysis unit tests; the starter kit is
   re-exported (personal-data leak sweep) and the app smoke-tested. Run them
-  locally: `node scripts/check-docs.mjs && node scripts/test.mjs`.
+  locally, one per line — PowerShell rejects `&&`:
+
+```
+node scripts/check-docs.mjs
+node scripts/test.mjs
+```
 
 ## Sharing the system (without sharing my data)
 
