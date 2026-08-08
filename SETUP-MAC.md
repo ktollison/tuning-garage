@@ -167,6 +167,19 @@ whether the port actually answers. The useful failure is when those disagree.
 `restart` reloads it after pulling changes, `uninstall` removes it. Logs are in
 `logs/`, which is gitignored.
 
+**One thing worth knowing:** the agent keeps a single process alive, and pulling
+new code does not touch it — so the app can carry on serving the previous build
+indefinitely. `status` now checks for this and says so:
+
+```
+STALE: serving v0.31.0, but the code on disk is v0.31.3.
+  fix:  sh scripts/autostart-macos.sh restart
+```
+
+`./start-tuning.sh` handles it for you: it compares the running version against
+the code on disk and restarts the agent if they differ, so the launcher is
+always safe to run.
+
 The app binds to **127.0.0.1 only** — nothing is exposed to your network — and
 has zero dependencies.
 
@@ -194,6 +207,7 @@ If you tune on Windows and research on the Mac:
 | Commit says it worked but nothing changed | `git config --global user.email` is unset — see step 3 |
 | Port 4590 already in use | Something else is on it: `lsof -nP -iTCP:4590 -sTCP:LISTEN`. Or run on another port: `PORT=4700 node app/server.mjs` |
 | App will not start after a pull | `node --version` — must be 18+ |
+| App is running old code after a pull | `./start-tuning.sh` — it detects the mismatch and restarts. Or `sh scripts/autostart-macos.sh restart` |
 | Agent loaded but the port does not answer | Read `logs/app.err.log`; launchd runs with a minimal `PATH`, so re-run `install` if you changed how Node is installed |
 
 ## If both machines edited without syncing

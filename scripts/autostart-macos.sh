@@ -97,12 +97,26 @@ status)
   else
     echo "server NOT answering on port $PORT (HTTP $code) — check logs/app.err.log"
   fi
+  # A loaded agent answering on the port is not the same as a CURRENT one: the
+  # process outlives every pull, so it can serve last week's build while both
+  # checks above stay green. That is exactly how it went unnoticed.
+  # `|| vc=$?` matters: this script runs under `set -e`, so a bare non-zero
+  # command would abort before the hint below could print.
+  vc=0
+  PORT="$PORT" node "$REPO/scripts/version-check.mjs" || vc=$?
+  [ "$vc" -eq 1 ] && echo "  fix:  sh scripts/autostart-macos.sh restart"
   ;;
 
 restart)
   launchctl kickstart -k "$TARGET/$LABEL"
   echo "restarted"
-  sleep 1
+  # wait for the new process to answer before reporting, so the version shown
+  # is the one now serving rather than whatever was still winding down
+  i=0
+  while [ $i -lt 20 ]; do
+    PORT="$PORT" node "$REPO/scripts/version-check.mjs" --quiet && break
+    i=$((i + 1)); sleep 1
+  done
   sh "$0" status
   ;;
 
