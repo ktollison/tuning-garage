@@ -366,7 +366,17 @@ function overview() {
 // ---------- Tunes ----------
 function tunes() {
   const v = vh();
-  return `${vehicleSelect()}
+  // A read failure must never be shown as "you have no files". If the server
+  // could not read a directory it says so, and that has to reach the screen —
+  // an empty stock section silently means the baseline is gone.
+  const readErr = (v.readErrors || []).length ? `
+  <div class="card" style="border-color:#c0392b">
+    <h2 style="color:#e74c3c">⚠ Could not read some files</h2>
+    <div class="note">These are <b>read errors, not missing files</b>. Nothing has been deleted —
+    the app could not list the folder. Check permissions and whether the drive is mounted.</div>
+    <ul>${v.readErrors.map(e => `<li><code>${esc(e)}</code></li>`).join("")}</ul>
+  </div>` : "";
+  return `${vehicleSelect()}${readErr}
   <div class="card"><h2>Stock read — the sacred baseline</h2>
     <div style="margin-bottom:8px">
       <span class="badge ${stockFormats(v).bin ? "verified" : "unverified"}">PCMHammer .bin ${stockFormats(v).bin ? "✓" : "missing"}</span>

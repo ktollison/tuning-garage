@@ -21,7 +21,7 @@ import { detectUnit, convert, DEFAULT_PREFERENCES, QUANTITIES } from "./modules/
 import * as scanner from "./modules/vcmscanner.mjs";
 
 const execFileP = promisify(execFile);
-const APP_VERSION = "0.31.5"; // keep in step with CHANGELOG.md — CI enforces the match
+const APP_VERSION = "0.32.0"; // keep in step with CHANGELOG.md — CI enforces the match
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(process.env.TUNING_REPO || path.join(__dirname, ".."));
 const PUBLIC = path.join(__dirname, "public");
@@ -78,21 +78,44 @@ async function fileSha(p, st) {
   return sha;
 }
 
+// An empty list must mean "this directory has no files" and nothing else.
+// It used to also mean "something went wrong reading it" — a single catch
+// swallowed every error and returned []. For a datalog folder that is a
+// nuisance; for tunes/stock it reads as "your archived stock read is gone",
+// which is the most alarming thing this app could tell you, and it would say
+// it without a word in the log.
 async function listFiles(dir, { withHash = false } = {}) {
+  let names;
   try {
-    const names = await fsp.readdir(dir);
-    const out = [];
-    for (const n of names) {
-      if (n.startsWith(".")) continue;
-      const p = path.join(dir, n);
-      const st = await fsp.stat(p);
-      if (!st.isFile()) continue;
-      const entry = { name: n, size: st.size, mtime: st.mtime.toISOString() };
-      if (withHash) entry.sha256 = await fileSha(p, st);
-      out.push(entry);
+    names = await fsp.readdir(dir);
+  } catch (e) {
+    if (e.code === "ENOENT") return [];      // genuinely not there yet
+    console.error(`listFiles: cannot read ${dir}: ${e.code || e.message}`);
+    const err = new Error(`Could not read ${path.relative(REPO, dir)}: ${e.code || e.message}`);
+    err.listFailure = true;
+    throw err;
+  }
+  const out = [];
+  for (const n of names) {
+    if (n.startsWith(".")) continue;
+    const p = path.join(dir, n);
+    let st;
+    try { st = await fsp.stat(p); } catch { continue; }   // vanished mid-scan
+    if (!st.isFile()) continue;
+    const entry = { name: n, size: st.size, mtime: st.mtime.toISOString() };
+    if (withHash) {
+      // A file that cannot be hashed is still a file that EXISTS. Report it
+      // with the hash missing rather than dropping it from the listing.
+      try { entry.sha256 = await fileSha(p, st); }
+      catch (e) {
+        entry.sha256 = null;
+        entry.hashError = e.code || e.message;
+        console.error(`listFiles: cannot hash ${p}: ${entry.hashError}`);
+      }
     }
-    return out.sort((a, b) => b.name.localeCompare(a.name));
-  } catch { return []; }
+    out.push(entry);
+  }
+  return out.sort((a, b) => b.name.localeCompare(a.name));
 }
 
 async function syncCounts() {
@@ -299,16 +322,25 @@ function parseCurrentState(profile) {
 async function vehicleState(id) {
   const base = path.join(REPO, "vehicles", id);
   const tunesDir = path.join(base, "tunes");
-  const tunes = (await listFiles(tunesDir, { withHash: true })).filter(f => f.name !== "CHANGELOG.md");
-  const stock = await listFiles(path.join(tunesDir, "stock"), { withHash: true });
-  const datalogs = await listFiles(path.join(base, "datalogs"));
-  const sessions = await listFiles(path.join(base, "sessions"));
+  // Collect read failures rather than letting one bad directory take down the
+  // whole state request — but never let a failure masquerade as "no files".
+  const errors = [];
+  const list = async (dir, opts) => {
+    try { return await listFiles(dir, opts); }
+    catch (e) { errors.push(e.message); return null; }
+  };
+  const tunes = (await list(tunesDir, { withHash: true }))?.filter(f => f.name !== "CHANGELOG.md") ?? null;
+  const stock = await list(path.join(tunesDir, "stock"), { withHash: true });
+  const datalogs = await list(path.join(base, "datalogs"));
+  const sessions = await list(path.join(base, "sessions"));
   let changelog = "", profile = "";
   try { changelog = await fsp.readFile(path.join(tunesDir, "CHANGELOG.md"), "utf8"); } catch {}
   try { profile = await fsp.readFile(path.join(base, "vehicle.md"), "utf8"); } catch {}
   let flashLog = "";
   try { flashLog = await fsp.readFile(path.join(base, "flash-log.md"), "utf8"); } catch {}
-  return { id, tunes, stock, datalogs, sessions, changelog, profile, flashLog, ...parseCurrentState(profile) };
+  return { id, tunes: tunes ?? [], stock: stock ?? [], datalogs: datalogs ?? [],
+           sessions: sessions ?? [], readErrors: errors,
+           changelog, profile, flashLog, ...parseCurrentState(profile) };
 }
 
 function nextRev(tunes) {
@@ -449,8 +481,16 @@ async function writeUserMath(data) {
 
 async function handleApi(req, res, url) {
   const q = url.searchParams;
+  // no-store on every API response. This is a live view of files on disk, and a
+  // browser is entitled to cache a GET without it — which means the page can go
+  // on showing a snapshot of state from minutes ago, including a file list that
+  // no longer matches reality. Nothing in an API response here is ever worth
+  // reusing.
   const send = (code, obj) => {
-    res.writeHead(code, { "content-type": "application/json" });
+    res.writeHead(code, {
+      "content-type": "application/json",
+      "cache-control": "no-store, must-revalidate",
+    });
     res.end(JSON.stringify(obj));
   };
 
