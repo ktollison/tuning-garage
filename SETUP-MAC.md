@@ -83,6 +83,16 @@ push reports "up to date", and nothing has actually been saved.
 **Already have the repo?** (Setting up a second machine.) Skip to
 [step 5](#5-clone-your-repo).
 
+> **Do not put this in `~/Documents` or on the Desktop.** If iCloud Drive syncs
+> those folders — the "Desktop & Documents Folders" option, which is on by
+> default — macOS will evict the *contents* of files it thinks you are not
+> using, leaving the name and size behind with nothing under them. A background
+> agent reading one of those gets an error where a normal app would quietly
+> download it, so your stock read can appear to vanish from the app while being
+> perfectly safe in iCloud. This happened during development, to the datalogs,
+> the donor bin and 275 git objects. `~/Tuning` is outside the synced area and
+> avoids it entirely.
+
 ### The easy way — in your browser
 
 1. Go to **<https://github.com/ktollison/tuning-garage>**
@@ -95,7 +105,7 @@ That is it. You now own a private copy with none of the starter kit's history
 attached to it. Then bring it down to your Mac:
 
 ```bash
-cd ~/Documents && gh repo clone YOUR-USERNAME/Tuning Tuning
+cd ~ && gh repo clone YOUR-USERNAME/Tuning Tuning
 ```
 
 Replace `YOUR-USERNAME` with your GitHub username.
@@ -105,7 +115,7 @@ Replace `YOUR-USERNAME` with your GitHub username.
 Same result, if you would rather stay in the Terminal:
 
 ```bash
-cd ~/Documents && gh repo create Tuning --private --template ktollison/tuning-garage --clone
+cd ~ && gh repo create Tuning --private --template ktollison/tuning-garage --clone
 ```
 
 ### Check it really is private
@@ -113,7 +123,7 @@ cd ~/Documents && gh repo create Tuning --private --template ktollison/tuning-ga
 Worth ten seconds, because this is the one mistake you cannot take back:
 
 ```bash
-cd ~/Documents/Tuning && gh repo view --json isPrivate,nameWithOwner
+cd ~/Tuning && gh repo view --json isPrivate,nameWithOwner
 ```
 
 You want `"isPrivate": true`. If it says `false`, fix it **before** you add a
@@ -128,7 +138,7 @@ gh repo edit --visibility private --accept-visibility-change-consequences
 Only needed on a **second** machine — the first already has it from step 4.
 
 ```bash
-cd ~/Documents && gh repo clone YOUR-USERNAME/Tuning Tuning
+cd ~ && gh repo clone YOUR-USERNAME/Tuning Tuning
 ```
 
 ---
@@ -136,7 +146,7 @@ cd ~/Documents && gh repo clone YOUR-USERNAME/Tuning Tuning
 ## 6. Run it
 
 ```bash
-cd ~/Documents/Tuning && ./start-tuning.sh
+cd ~/Tuning && ./start-tuning.sh
 ```
 
 It pulls the latest, starts the app, waits for the server to actually respond,
@@ -208,6 +218,7 @@ If you tune on Windows and research on the Mac:
 | Port 4590 already in use | Something else is on it: `lsof -nP -iTCP:4590 -sTCP:LISTEN`. Or run on another port: `PORT=4700 node app/server.mjs` |
 | App will not start after a pull | `node --version` — must be 18+ |
 | App is running old code after a pull | `./start-tuning.sh` — it detects the mismatch and restarts. Or `sh scripts/autostart-macos.sh restart` |
+| Files listed but unreadable, or `Unknown system error -11` | iCloud evicted their contents. `brctl download <path>` restores them; move the repo out of `~/Documents` so it stops happening |
 | Agent loaded but the port does not answer | Read `logs/app.err.log`; launchd runs with a minimal `PATH`, so re-run `install` if you changed how Node is installed |
 
 ## If both machines edited without syncing

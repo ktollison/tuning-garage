@@ -114,6 +114,17 @@ Use the same email as your GitHub account so commits are attributed to you.
 **Already have the repo?** (Setting up a second machine.) Skip to
 [step 5](#5-clone-your-repo).
 
+> **Do not put this in your Documents folder.** On many PCs Documents is
+> redirected into **OneDrive**, and with Files On-Demand switched on Windows
+> keeps a file's name and size while removing its contents. A background
+> process reading one of those gets an error where Explorer would quietly
+> download it, so your stock read can appear to vanish from the app while being
+> perfectly safe in the cloud. The Mac side of this project hit exactly that
+> with iCloud. `%USERPROFILE%\Tuning` is outside the synced area.
+>
+> Already installed under Documents? If Explorer shows a cloud status column on
+> that folder, move it — the commands below use `%USERPROFILE%` throughout.
+
 ### The easy way — in your browser
 
 1. Go to **<https://github.com/ktollison/tuning-garage>**
@@ -126,7 +137,7 @@ That is it. You now own a private copy with none of the starter kit's history
 attached to it. Then bring it down to your PC:
 
 ```bash
-cd %USERPROFILE%\Documents
+cd %USERPROFILE%
 ```
 
 ```bash
@@ -140,7 +151,7 @@ Replace `YOUR-USERNAME` with your GitHub username.
 Same result, if you would rather stay in the Terminal:
 
 ```bash
-cd %USERPROFILE%\Documents
+cd %USERPROFILE%
 ```
 
 ```bash
@@ -171,7 +182,7 @@ gh repo edit --visibility private --accept-visibility-change-consequences
 Only needed on a **second** machine — the first one already has it from step 4.
 
 ```bash
-cd %USERPROFILE%\Documents
+cd %USERPROFILE%
 ```
 
 ```bash
@@ -214,6 +225,7 @@ launcher pulls (or hit Sync in the app).**
 | `'&&' is not a valid statement separator` | You're in PowerShell — run each command on its own line |
 | Browser opens to "can't connect" | The launcher now waits for the server; if it still happens, give it a moment and refresh |
 | `git`/`node`/`gh` "not recognized" | PATH option missed in that installer — reinstall |
+| Files listed but unreadable, or a cryptic system error | OneDrive removed their contents. Right-click the folder -> **Always keep on this device**, or move the repo out of Documents |
 | Push rejected / asks for password repeatedly | Re-run `gh auth login` and answer **Yes** to "Authenticate Git with your GitHub credentials" |
 
 ## If both machines edited without syncing
