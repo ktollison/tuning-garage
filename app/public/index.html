@@ -182,9 +182,23 @@ function render() {
 
 // Always shown, even with one vehicle — otherwise the app looks single-car
 // and nobody discovers that a second one is a click away.
+// Shown by every vehicle-scoped tab. It lives here rather than in one tab
+// because a read failure is not tab-specific: an unreadable datalogs folder
+// renders as "No datalogs yet", which is the same lie in a different place.
+function readErrorBanner() {
+  const v = vh();
+  if (!v || !(v.readErrors || []).length) return "";
+  return `<div class="card" style="border-color:#c0392b">
+    <h2 style="color:#e74c3c">⚠ Could not read some files</h2>
+    <div class="note">These are <b>read errors, not missing files</b>. Nothing has been deleted —
+    the app could not read the folder, so any list below may be incomplete.</div>
+    <ul>${v.readErrors.map(e => `<li><code>${esc(e)}</code></li>`).join("")}</ul>
+  </div>`;
+}
+
 function vehicleSelect() {
   const many = STATE.vehicles.length > 1;
-  return `<div style="margin-bottom:12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+  return readErrorBanner() + `<div style="margin-bottom:12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
     <label style="margin:0">Vehicle</label>
     <select style="width:auto" onchange="VEHICLE=this.value;TIMELINE=null;render()">
       ${STATE.vehicles.map(v => `<option ${v.id === VEHICLE ? "selected" : ""}>${esc(v.id)}</option>`).join("")}
@@ -366,17 +380,7 @@ function overview() {
 // ---------- Tunes ----------
 function tunes() {
   const v = vh();
-  // A read failure must never be shown as "you have no files". If the server
-  // could not read a directory it says so, and that has to reach the screen —
-  // an empty stock section silently means the baseline is gone.
-  const readErr = (v.readErrors || []).length ? `
-  <div class="card" style="border-color:#c0392b">
-    <h2 style="color:#e74c3c">⚠ Could not read some files</h2>
-    <div class="note">These are <b>read errors, not missing files</b>. Nothing has been deleted —
-    the app could not list the folder. Check permissions and whether the drive is mounted.</div>
-    <ul>${v.readErrors.map(e => `<li><code>${esc(e)}</code></li>`).join("")}</ul>
-  </div>` : "";
-  return `${vehicleSelect()}${readErr}
+  return `${vehicleSelect()}
   <div class="card"><h2>Stock read — the sacred baseline</h2>
     <div style="margin-bottom:8px">
       <span class="badge ${stockFormats(v).bin ? "verified" : "unverified"}">PCMHammer .bin ${stockFormats(v).bin ? "✓" : "missing"}</span>

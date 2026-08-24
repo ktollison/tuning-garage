@@ -191,7 +191,7 @@ node scripts/test.mjs
 
 The app is a generic engine — it operates on whatever repo it's pointed at
 (`TUNING_REPO` env var). Everything personal lives in `vehicles/`, `data/`,
-`PROGRESSION.md` state, and `dashboard/`. To produce a shareable starter kit:
+`PROGRESSION.md` state. To produce a shareable starter kit:
 
 ```bash
 node app/export-template.mjs ../tuning-starter

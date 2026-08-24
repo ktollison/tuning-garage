@@ -21,7 +21,7 @@ import { detectUnit, convert, DEFAULT_PREFERENCES, QUANTITIES } from "./modules/
 import * as scanner from "./modules/vcmscanner.mjs";
 
 const execFileP = promisify(execFile);
-const APP_VERSION = "0.34.0"; // keep in step with CHANGELOG.md — CI enforces the match
+const APP_VERSION = "0.35.0"; // keep in step with CHANGELOG.md — CI enforces the match
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(process.env.TUNING_REPO || path.join(__dirname, ".."));
 const PUBLIC = path.join(__dirname, "public");
@@ -46,15 +46,23 @@ const today = () => new Date().toISOString().slice(0, 10);
 // appears to vanish. Name it, because the raw errno explains nothing.
 async function describeReadError(file, e) {
   const code = e.code || e.message;
+  const rel = path.relative(REPO, file);
   try {
     const st = await fsp.stat(file);
-    if (st.size > 0 && st.blocks === 0)
-      return `${path.relative(REPO, file)} is in iCloud but its contents are not on this Mac `
-           + `(evicted, ${st.size} bytes, 0 blocks). The file is not lost — run `
-           + `\`brctl download "${path.relative(REPO, file)}"\`, and consider moving this repo `
-           + `out of ~/Documents so iCloud stops evicting it.`;
+    // Only a REGULAR FILE can be dataless. Directories legitimately report
+    // zero allocated blocks, so testing blocks alone diagnosed every failed
+    // directory read as an iCloud eviction — including plain permission
+    // errors, which it then told the user to fix with `brctl download`.
+    // Eviction also surfaces as EAGAIN/EIO, never as EACCES or EPERM.
+    const dataless = st.isFile() && st.size > 0 && st.blocks === 0;
+    const evictionCode = code === "EAGAIN" || code === "EIO" || /system error -11/.test(String(code));
+    if (dataless && evictionCode)
+      return `${rel} is in the cloud but its contents are not on this Mac `
+           + `(${st.size} bytes, 0 blocks allocated). Nothing is lost — run `
+           + `\`brctl download "${rel}"\`. Keep this repo out of a synced folder `
+           + `(iCloud Desktop & Documents, OneDrive) so it stops being evicted.`;
   } catch { /* fall through to the plain message */ }
-  return `Cannot read ${path.relative(REPO, file)}: ${code}`;
+  return `Cannot read ${rel}: ${code}`;
 }
 
 function safeJoin(root, rel) {
@@ -128,8 +136,8 @@ async function listFiles(dir, { withHash = false } = {}) {
       try { entry.sha256 = await fileSha(p, st); }
       catch (e) {
         entry.sha256 = null;
-        entry.hashError = st.size > 0 && st.blocks === 0
-          ? "contents not on this Mac (iCloud evicted) — run brctl download"
+        entry.hashError = st.isFile() && st.size > 0 && st.blocks === 0
+          ? "contents not on this Mac (cloud-evicted) — run brctl download"
           : (e.code || e.message);
         console.error(`listFiles: cannot hash ${p}: ${entry.hashError}`);
       }
