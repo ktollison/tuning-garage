@@ -200,8 +200,30 @@ node app/export-template.mjs ../tuning-starter
 That builds a clean copy containing the app, templates, docs, launchers, a
 fully reset PROGRESSION.md, generic user-math formulas (all `unverified`),
 and an empty `example-vehicle` — then **sweeps the output and refuses to
-finish if any personal string (name, vehicle, repo) survives**. Publish the
-output folder as its own public repo whenever ready; this repo stays private.
+finish if any personal string (name, vehicle, repo) survives**.
+
+### Cutting a release
+
+The public repo is <https://github.com/ktollison/tuning-garage>. This one stays
+private and is the source of truth; the public one is a mirror of the *export*,
+never of this working tree and never of this git history.
+
+```bash
+node scripts/publish-public.mjs --dry-run
+```
+
+```bash
+node scripts/publish-public.mjs
+```
+
+It refuses to push unless the tests pass, `check-docs` passes, the export's own
+leak sweep passes, and a final identifier sweep over the built tree comes back
+clean. It commits, tags `vX.Y.Z` and pushes. A rejected push leaves the release
+committed locally, and re-running picks it up rather than reporting "up to
+date".
+
+Bump `APP_VERSION` and add the CHANGELOG entry **before** publishing —
+`check-docs` gates on both, so a release without them stops at the first step.
 
 ## Licence
 

@@ -234,6 +234,28 @@ everything above it:
   but the wideband disagrees, which means the O2s or the commanded table are
   suspect and the corrections above shouldn't be trusted yet.
 
+Three more sections appear when the log supports them. All are binned on
+**RPM × kPa** — the axes GM indexes the VE and spark tables on — so a cell here
+is a cell you can go and look at.
+
+- **MAF vs speed-density** compares the PCM's two airflow estimates against each
+  other. Because it compares models rather than fuelling, it needs no wideband
+  and no open loop — it is the one VE-relevant view an ordinary closed-loop
+  cruise log will give you. Where they diverge is where the MAF table and the VE
+  table disagree.
+- **Suggested spark change** turns knock retard into the subtraction to make,
+  using the maximum in each cell. **If knock coincides with high intake air
+  temperature the suggestion is withheld**, because the IAT retard table is then
+  the likelier fix and pulling timing would be treating the symptom. Logged
+  advance is a blend of the High and Low Octane tables, so it can never be
+  attributed to one of them.
+- **VE correction** gives a multiplier per cell from measured against commanded
+  lambda. It is computed from **open-loop samples only** and refuses outright on
+  a closed-loop log — with the trims in control the mixture sits at commanded
+  however wrong VE is, so the error reads as zero, and on a MAF-primary tune
+  those trims describe the MAF table anyway. Log a WOT pull, or a session with
+  the MAF disabled, to get numbers here.
+
 ### Step 8 — Apply one change, then log the session
 
 Take **one** suggestion, apply it by hand in your tuning software, and check the
