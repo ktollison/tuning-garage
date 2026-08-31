@@ -29,6 +29,10 @@
 # match is whitespace-tolerant on purpose: if Pushover ever pretty-prints its
 # JSON, an exact match would turn every future alert into a false failure.
 
+# Run with bash, not sh. curl arguments are built in an array so a title or
+# message containing quotes or newlines cannot be re-split; dash — which is
+# /bin/sh on Debian and Ubuntu — has no arrays, and the script dies before
+# sending anything. CI caught exactly that.
 set -euo pipefail
 
 ENV_FILE="${TUNING_PUSHOVER_ENV:-$HOME/.config/tuning-garage/pushover.env}"

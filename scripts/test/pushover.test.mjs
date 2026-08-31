@@ -38,7 +38,7 @@ const close = s => new Promise(r => s.close(r));
 
 const run = (args = ["--title", "t", "--message", "m"]) => new Promise(resolve => {
   const out = [];
-  const p = spawn("sh", [SCRIPT, ...args], {
+  const p = spawn("bash", [SCRIPT, ...args], {
     stdio: ["ignore", "pipe", "pipe"],
     env: { ...process.env, TUNING_PUSHOVER_ENV: ENV_FILE,
            TUNING_PUSHOVER_API: `http://127.0.0.1:${PORT}/messages.json` },
@@ -122,7 +122,7 @@ console.log("— absent config is not an error —");
 {
   const r = await new Promise(resolve => {
     const out = [];
-    const p = spawn("sh", [SCRIPT, "--title", "t"], {
+    const p = spawn("bash", [SCRIPT, "--title", "t"], {
       stdio: ["ignore", "pipe", "pipe"],
       env: { ...process.env, TUNING_PUSHOVER_ENV: path.join(TMP, "nope.env") },
     });

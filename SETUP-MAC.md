@@ -226,7 +226,7 @@ and simply sends nothing, so this is safe to install before setting it up.
 Test it with:
 
 ```bash
-sh scripts/notify-pushover.sh --title "Tuning Garage" --message "alerting works"
+bash scripts/notify-pushover.sh --title "Tuning Garage" --message "alerting works"
 ```
 
 Remove with `sh scripts/autostart-macos.sh watch-uninstall`.

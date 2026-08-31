@@ -47,5 +47,5 @@ jobs:
           umask 177
           printf 'PUSHOVER_TOKEN=%s\nPUSHOVER_USER=%s\n' "$PUSHOVER_TOKEN" "$PUSHOVER_USER" \
             > "$HOME/.config/tuning-garage/pushover.env"
-          sh scripts/notify-pushover.sh --title "$TITLE" --message "$BODY" \
+          bash scripts/notify-pushover.sh --title "$TITLE" --message "$BODY" \
             --url "$URL" --url-title "Open the submission"

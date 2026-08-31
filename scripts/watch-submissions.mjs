@@ -36,7 +36,7 @@ const dryRun = process.argv.includes("--dry-run");
 const notify = (title, message, url) => {
   if (dryRun) { console.log(`  [dry-run] would alert: ${title}`); return; }
   try {
-    execFileSync("sh", [path.join(REPO, "scripts/notify-pushover.sh"),
+    execFileSync("bash", [path.join(REPO, "scripts/notify-pushover.sh"),
       "--title", title, "--message", message, "--url", url, "--url-title", "Open on GitHub"],
       { stdio: "inherit" });
   } catch { console.error("  alert failed — see the output above"); }
