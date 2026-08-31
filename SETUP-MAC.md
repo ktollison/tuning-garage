@@ -193,6 +193,20 @@ always safe to run.
 The app binds to **127.0.0.1 only** — nothing is exposed to your network — and
 has zero dependencies.
 
+### Setting up the public repository (maintainers only)
+
+Issue forms can only apply labels that **already exist**. If they do not, the
+form still works and the issue is still created — with no label at all, so the
+alert workflow never fires and nothing errors. Create them first:
+
+```bash
+node scripts/setup-labels.mjs
+```
+
+Safe to re-run: it creates what is missing, corrects a colour or description
+that has drifted, and does nothing when everything already matches.
+`--check` reports without changing anything, for a fresh box or CI.
+
 ### Alerts when someone submits (maintainers only)
 
 Only useful if you run the public project. Two paths, deliberately overlapping:
