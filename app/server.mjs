@@ -21,7 +21,7 @@ import { detectUnit, convert, DEFAULT_PREFERENCES, QUANTITIES } from "./modules/
 import * as scanner from "./modules/vcmscanner.mjs";
 
 const execFileP = promisify(execFile);
-const APP_VERSION = "0.36.0"; // keep in step with CHANGELOG.md — CI enforces the match
+const APP_VERSION = "0.37.0"; // keep in step with CHANGELOG.md — CI enforces the match
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(process.env.TUNING_REPO || path.join(__dirname, ".."));
 const PUBLIC = path.join(__dirname, "public");
@@ -515,6 +515,14 @@ function mathParamToUserMath(m, sourceFile, dictionary, unitCodes) {
     ].filter(Boolean).join(" "),
     source: `VCM Scanner Math Lab export (${sourceFile})`,
     status: "unverified",
+    // An imported formula is only valid on the platform whose layout it came
+    // from, and the importer cannot know which that was. Default to unknown so
+    // it lands in the quarantined group rather than beside formulas that do
+    // apply to this car; retag by hand once the platform is established.
+    platform: "unknown",
+    assumes: dec.unknown.length
+      ? { requires: `References parameter IDs not in the channel dictionary (${dec.unknown.join(", ")}), so neither the channels nor their units have been confirmed. Do not trust the result until they are.` }
+      : undefined,
     updated: today(),
   };
 }

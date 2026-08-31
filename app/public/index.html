@@ -1221,8 +1221,13 @@ function progression() {
 
 // ---------- User Math ----------
 function usermath() {
-  const params = STATE.userMath.parameters || [];
-  const cats = [...new Set(params.map(p => p.category))].sort();
+  const all = STATE.userMath.parameters || [];
+  // Formulas for a platform this car is not are kept, but never mixed into the
+  // same list — a Gen 5 formula sitting beside a working one is how it ends up
+  // pasted into a Gen 3 scanner.
+  const params = all.filter(p => (p.platform || "any") === "any");
+  const otherPlatform = all.filter(p => (p.platform || "any") !== "any");
+  const cats = [...new Set(all.map(p => p.category))].sort();
   return `
   <div class="card"><h2>User math repository</h2>
     <div class="note" style="margin:0 0 10px">Scanner math parameters (VCM Scanner user math, histogram formulas, spreadsheet calcs). Anything marked <span class="badge unverified">unverified</span> hasn't been proven against a real log yet — verify before trusting a tune decision to it.
@@ -1241,11 +1246,35 @@ function usermath() {
           <button class="ghost danger" onclick="delMath('${p.id}','${esc(p.name).replace(/'/g,"\\'")}')">delete</button>
         </div>
         <div class="expr">${esc(p.expression)}</div>
+        ${p.assumes?.requires ? `<div class="note" style="${p.assumes.warn ? "color:var(--warn);border-left:3px solid var(--warn);padding-left:8px" : ""}">
+          ${p.assumes.warn ? "⚠ <b>Unit requirement</b> — " : "<b>Assumes:</b> "}${esc(p.assumes.requires)}</div>` : ""}
+        ${p.assumes?.inputs ? `<div class="note">Expects: ${Object.entries(p.assumes.inputs).map(([k, v]) => `<code>${esc(k)}</code> in ${esc(v)}`).join(" · ")}</div>` : ""}
         ${p.inputs ? `<div class="note">Inputs: ${esc(p.inputs)}</div>` : ""}
         ${p.notes ? `<div class="note">${esc(p.notes)}</div>` : ""}
         ${p.source ? `<div class="note">Source: ${esc(p.source)}</div>` : ""}
       </div>`).join("")).join("")}
   </div>
+
+  ${otherPlatform.length ? `<div class="card" style="border-color:var(--warn)">
+    <h2>Other platforms — not for this vehicle</h2>
+    <div class="note">${otherPlatform.length} parameter${otherPlatform.length === 1 ? "" : "s"} imported from a
+      scanner layout for a different platform. They reference parameter IDs a Gen 3 P01 does not log, so they
+      cannot be computed on this car as written. Kept because they are valid where they came from.</div>
+    ${otherPlatform.map(p => `
+      <div class="mathcard">
+        <div class="mathhead"><b>${esc(p.name)}</b>
+          <span class="badge">${esc(p.platform)}</span>
+          <span class="badge ${p.status === "verified" ? "verified" : "unverified"}">${esc(p.status)}</span>
+          <span style="flex:1"></span>
+          <button class="ghost" onclick="editMath('${p.id}')">edit</button>
+          <button class="ghost danger" onclick="delMath('${p.id}','${esc(p.name).replace(/'/g, "\\'")}')">delete</button>
+        </div>
+        <div class="expr">${esc(p.expression)}</div>
+        ${p.assumes?.requires ? `<div class="note" style="${p.assumes.warn ? "color:var(--warn);border-left:3px solid var(--warn);padding-left:8px" : ""}">
+          ${p.assumes.warn ? "⚠ <b>Unit requirement</b> — " : ""}${esc(p.assumes.requires)}</div>` : ""}
+      </div>`).join("")}
+  </div>` : ""}
+
   ${scannerMathCard()}
 
   <div class="card"><h2 id="mathformtitle">Add a parameter by hand</h2>
@@ -1353,6 +1382,18 @@ async function logAnalysis(rel, filters) {
         ? `${r.ectThreshold.value} ${esc(r.ectThreshold.unit)}${r.ectThreshold.converted ? ` <span style="color:var(--accent)">(converted from ${esc(r.ectThreshold.from)} — the log records ${esc(r.ectThreshold.unit)})</span>` : ""}`
         : `<span style="color:var(--warn)">none — see warning above</span>`}
     </div>
+
+    <details style="margin-bottom:10px"><summary>Units read from this log</summary>
+      <div class="note">Every channel below was read in the unit shown. A wrong unit here is the one mistake
+        that produces confident, wrong numbers everywhere downstream — the app refuses to convert an unknown
+        unit, but it cannot know that a header saying <code>psi</code> is telling the truth.</div>
+      <table><tr><th>Role</th><th>Channel</th><th>Unit read</th><th>Quantity</th></tr>
+      ${Object.entries(r.channelUnits || {}).filter(([, u]) => u.column).map(([role, u]) => `<tr>
+        <td>${esc(role)}</td><td>${esc(u.column)}</td>
+        <td class="num">${u.unit ? esc(u.unit) : '<span style="color:var(--warn)">none stated</span>'}</td>
+        <td class="note">${u.quantity ? esc(u.quantity) + (u.convertible ? "" : " (not convertible)") : "—"}</td>
+      </tr>`).join("")}</table>
+    </details>
 
     <details style="margin-bottom:10px"><summary>Adjust filters</summary>
       <div class="row">

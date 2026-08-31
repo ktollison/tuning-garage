@@ -11,7 +11,15 @@
       "source": "Community-standard formula — verify against your own scanner/logs",
       "status": "unverified",
       "updated": "",
-      "sample": true
+      "sample": true,
+      "platform": "any",
+      "assumes": {
+        "inputs": {
+          "IPW_ms": "ms",
+          "RPM": "RPM"
+        },
+        "requires": "Pulse width in MILLISECONDS. A scanner reporting microseconds gives a result 1000x high."
+      }
     },
     {
       "id": "total-fuel-trim-seed",
@@ -24,7 +32,15 @@
       "source": "Community-standard formula — verify against your own scanner/logs",
       "status": "unverified",
       "updated": "",
-      "sample": true
+      "sample": true,
+      "platform": "any",
+      "assumes": {
+        "inputs": {
+          "LTFT": "%",
+          "STFT": "%"
+        },
+        "requires": "Both trims as percentages, not multipliers. A trim reported as 1.05 rather than 5% makes this meaningless."
+      }
     },
     {
       "id": "maf-correction-factor-seed",
@@ -37,7 +53,15 @@
       "source": "Community-standard formula — verify against your own scanner/logs",
       "status": "unverified",
       "updated": "",
-      "sample": true
+      "sample": true,
+      "platform": "any",
+      "assumes": {
+        "inputs": {
+          "LTFT": "%",
+          "STFT": "%"
+        },
+        "requires": "Both trims as percentages. Output is a multiplier to apply to the MAF table cell."
+      }
     },
     {
       "id": "afr-error-wideband-seed",
@@ -50,7 +74,16 @@
       "source": "Community-standard formula — verify against your own scanner/logs",
       "status": "unverified",
       "updated": "",
-      "sample": true
+      "sample": true,
+      "platform": "any",
+      "assumes": {
+        "inputs": {
+          "WB_AFR": "AFR or λ",
+          "Commanded_AFR": "the SAME scale as WB_AFR"
+        },
+        "requires": "BOTH inputs must use the same scale. The formula is scale-invariant — AFR against AFR and λ against λ give the identical answer — but λ measured against AFR commanded yields about -93%, which looks like a plausible rich reading rather than an error.",
+        "warn": true
+      }
     }
   ]
 }

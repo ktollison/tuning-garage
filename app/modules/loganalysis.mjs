@@ -8,7 +8,7 @@
 // ever written into a tune: the MAF suggestion is a table to apply by hand in
 // HP Tuners, after you agree with it.
 
-import { detectUnit, convert } from "./units.mjs";
+import { detectUnit, convert, requireUnit } from "./units.mjs";
 
 // ---------- channel detection ----------
 // VCM Scanner column names vary by layout and are user-editable, so match
@@ -361,12 +361,11 @@ export function filterRows(parsed, ch, opts = {}, channelUnits = {}) {
   // than converting every sample. If the log doesn't state a temperature unit
   // we DISABLE the filter and say so — guessing here silently threw away a
   // whole Celsius log before this was fixed.
-  const ectUnit = channelUnits.ect?.quantity === "temperature" ? channelUnits.ect.unit : null;
+  const ectReq = requireUnit(channelUnits, "ect", "temperature", f.minEctUnit, "coolant temperature");
+  const ectUnit = ectReq.ok ? ectReq.unit : null;
   let ectThreshold = null;
-  if (ch.ect === undefined) {
-    warnings.push("No coolant-temperature channel in this log — the warmed-up filter was not applied.");
-  } else if (!ectUnit) {
-    warnings.push(`Coolant temperature has no unit in its header (“${parsed.headers[ch.ect]}”), so the warmed-up filter was disabled rather than guessed. Add units to the channel name, or set the threshold manually.`);
+  if (!ectReq.ok) {
+    warnings.push(`${ectReq.reason} — the warmed-up filter was disabled rather than guessed. Add units to the channel name, or set the threshold manually.`);
   } else {
     ectThreshold = {
       value: +convert(f.minEct, f.minEctUnit, ectUnit).toFixed(1),
@@ -461,10 +460,8 @@ export function binByAxis(kept, ch, axisRole = "mafHz", binSize = 500, minSample
 // log does not state a unit — in which case we bin raw and say so, rather than
 // guessing, exactly as the coolant threshold does.
 export function loadToKpa(channelUnits, role = "map") {
-  const u = channelUnits?.[role];
-  if (!u || u.quantity !== "pressure" || !u.unit) return null;
-  if (u.unit === "kPa") return v => v;
-  return v => convert(v, u.unit, "kPa");
+  const r = requireUnit(channelUnits, role, "pressure", "kPa", "manifold pressure");
+  return r.ok ? r.convert : null;
 }
 
 // ---------- 2D heat map: average value over an X/Y grid ----------
@@ -714,9 +711,10 @@ export function analyzeSpark(parsed, ch, channelUnits, opts = {}) {
   // event is what matters, and averaging it away is how detonation gets tuned
   // around instead of out.
   const hotIat = opts.hotIatF ?? 100;              // °F above which IAT retard is the likelier cause
-  const iatUnit = channelUnits?.iat?.unit ?? null;
-  const hotIatInLogUnit = iatUnit && channelUnits.iat.quantity === "temperature"
-    ? convert(hotIat, "°F", iatUnit) : null;
+  // express the threshold in the log's own unit rather than converting every sample
+  const iatReq = requireUnit(channelUnits, "iat", "temperature", "°F", "intake air temperature");
+  const iatUnit = iatReq.ok ? iatReq.unit : null;
+  const hotIatInLogUnit = iatReq.ok ? convert(hotIat, "°F", iatReq.unit) : null;
   const krList = [...krCells.values()].map(c => {
     const iatAvg = c.iatN ? c.iatSum / c.iatN : null;
     const iatSuspect = iatAvg !== null && hotIatInLogUnit !== null && iatAvg >= hotIatInLogUnit;
@@ -874,15 +872,11 @@ export function analyzeAirModels(parsed, ch, channelUnits, opts = {}) {
   if (ch.rpm === undefined || ch.map === undefined)
     return { present: false, reason: "needs RPM and MAP to bin on the VE table's axes" };
 
-  const toGs = (role) => {
-    const u = channelUnits?.[role];
-    if (!u?.unit || u.quantity !== "airflow") return null;
-    return u.unit === "g/s" ? (v => v) : (v => convert(v, u.unit, "g/s"));
-  };
-  const dynGs = toGs("dynAir"), mafGs = toGs("mafGs");
-  if (!dynGs || !mafGs)
-    return { present: false,
-             reason: "airflow channels carry no unit in their headers, so the two cannot be compared without guessing" };
+  const dynReq = requireUnit(channelUnits, "dynAir", "airflow", "g/s", "dynamic airflow");
+  const mafReq = requireUnit(channelUnits, "mafGs", "airflow", "g/s", "mass airflow");
+  if (!dynReq.ok || !mafReq.ok)
+    return { present: false, reason: (dynReq.ok ? mafReq : dynReq).reason };
+  const dynGs = dynReq.convert, mafGs = mafReq.convert;
 
   const yScale = loadToKpa(channelUnits, "map");
   if (!yScale)

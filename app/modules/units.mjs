@@ -55,7 +55,15 @@ export function quantityOf(unit) {
  *  the same as converting a difference — see convertDelta. */
 export function convert(value, from, to) {
   if (value == null || !Number.isFinite(value)) return null;
-  if (from === to || !from || !to) return value;
+  // An unknown unit is not a licence to skip the conversion. Returning the
+  // value untouched hands back a number wearing the WRONG unit — a psi reading
+  // labelled kPa is out by 6.9x, and nothing anywhere says so. Both sides
+  // absent is different: nothing is known and nothing is claimed, so a no-op
+  // is honest. One side absent is always a bug at the call site.
+  if (!from !== !to)
+    throw new Error(`refusing to convert with an unknown unit (${from ?? "unknown"} -> ${to ?? "unknown"}) — `
+      + `an unconverted value would be returned as if it were already ${to ?? from}`);
+  if (from === to || (!from && !to)) return value;
   const q = quantityOf(from);
   if (!q || q !== quantityOf(to)) throw new Error(`cannot convert ${from} to ${to}`);
   if (q === "temperature") {
@@ -69,7 +77,15 @@ export function convert(value, from, to) {
  *  change, not -12.2 °C — the offset must not be applied twice. */
 export function convertDelta(value, from, to) {
   if (value == null || !Number.isFinite(value)) return null;
-  if (from === to || !from || !to) return value;
+  // An unknown unit is not a licence to skip the conversion. Returning the
+  // value untouched hands back a number wearing the WRONG unit — a psi reading
+  // labelled kPa is out by 6.9x, and nothing anywhere says so. Both sides
+  // absent is different: nothing is known and nothing is claimed, so a no-op
+  // is honest. One side absent is always a bug at the call site.
+  if (!from !== !to)
+    throw new Error(`refusing to convert with an unknown unit (${from ?? "unknown"} -> ${to ?? "unknown"}) — `
+      + `an unconverted value would be returned as if it were already ${to ?? from}`);
+  if (from === to || (!from && !to)) return value;
   const q = quantityOf(from);
   if (!q || q !== quantityOf(to)) throw new Error(`cannot convert ${from} to ${to}`);
   if (q === "temperature") return from === "°F" ? value * 5 / 9 : value * 9 / 5;
@@ -135,4 +151,37 @@ export const DEFAULT_PREFERENCES = {
 export function preferredUnit(quantity, prefs = DEFAULT_PREFERENCES) {
   if (!quantity) return null;
   return prefs?.units?.[quantity] || QUANTITIES[quantity]?.canonical || null;
+}
+
+/**
+ * The one place an analysis states the units it needs.
+ *
+ * Four near-identical guards had grown up around `convert` — the coolant
+ * threshold, the load axis, the airflow comparison, the IAT threshold — each
+ * hand-checking "is the channel there, does it state a unit, is it the right
+ * quantity" before daring to convert. Duplicated invariants are how this
+ * codebase has been bitten before, so there is now one.
+ *
+ * Returns a converter, or a refusal carrying a reason fit to show a person.
+ * Never returns a pass-through on unknown units: that is the failure this
+ * exists to prevent.
+ */
+export function requireUnit(channelUnits, role, quantity, targetUnit, label = role) {
+  const u = channelUnits?.[role];
+  if (!u || u.column === undefined && u.unit === undefined)
+    return { ok: false, reason: `no ${label} channel in this log` };
+  if (!u.unit)
+    return { ok: false,
+             reason: `${label} (“${u.column ?? role}”) states no unit in its header, so it cannot be used without guessing` };
+  if (quantity && u.quantity !== quantity)
+    return { ok: false,
+             reason: `${label} is in ${u.unit}, which is not a ${quantity} unit` };
+  if (u.unit === targetUnit) return { ok: true, unit: u.unit, converted: false, convert: v => v };
+  try {
+    // prove the conversion works now rather than throwing mid-analysis
+    convert(1, u.unit, targetUnit);
+  } catch {
+    return { ok: false, reason: `${label} is in ${u.unit}, which cannot be converted to ${targetUnit}` };
+  }
+  return { ok: true, unit: u.unit, converted: true, convert: v => convert(v, u.unit, targetUnit) };
 }
