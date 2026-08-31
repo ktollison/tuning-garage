@@ -1394,6 +1394,8 @@ async function logAnalysis(rel, filters) {
     ${sparkHtml(r.spark)}
 
     ${widebandHtml(r.wideband)}
+    ${airModelsHtml(r.airModels)}
+    ${veHtml(r.ve)}
 
     ${r.heat && !r.heat.error && r.heat.cells.length ? `
       <h3 style="margin-top:16px">Where the trims live — ${esc(r.heat.xRole.toUpperCase())} (${esc(r.heat.xUnit || "?")}) × ${esc(r.heat.yRole.toUpperCase())} (${esc(r.heat.yUnit || "unit not stated in the log")})</h3>
@@ -1477,7 +1479,60 @@ function sparkHtml(s) {
             c => `${c.x} RPM, ${c.y} ${s.yUnit || ""}: ${c.avg}° average advance (max ${c.max}°, n=${c.n})`); })()}
       <div class="note">Average commanded advance per cell. Compare against the knock map above: timing that coincides with retard is the timing to pull first.</div>` : ""}
 
+    ${(s.sparkSuggestions || []).length ? `
+      <h3 style="margin-top:18px">Suggested spark change</h3>
+      <div class="note">Per cell, the <b>maximum</b> retard seen and the subtraction that follows from it.
+        Draft readings — apply by hand, one region at a time, and re-log.</div>
+      <table><tr><th>RPM</th><th>Load (kPa)</th><th>Max KR</th><th>Subtract</th><th>IAT while knocking</th><th></th></tr>
+      ${s.sparkSuggestions.map(c => `<tr${c.iatSuspect ? ' style="opacity:.75"' : ""}>
+        <td class="num">${c.rpm}–${c.rpm + s.rpmBin}</td><td class="num">${c.load}</td>
+        <td class="num">${c.maxKr}°</td>
+        <td class="num"><b>${c.iatSuspect ? "—" : c.delta + "°"}</b></td>
+        <td class="num">${c.iat ?? "—"}${c.iat != null ? " " + esc(s.krMap?.iatUnit || "") : ""}</td>
+        <td class="note">${c.iatSuspect ? "<b style=\"color:var(--warn)\">⚠ heat, not timing</b> — check the IAT spark-retard table first" : "High Octane table"}</td>
+      </tr>`).join("")}</table>
+      <div class="note" style="margin-top:8px">${esc(s.blendCaveat)}</div>` : ""}
+
     <div class="note">${esc(s.note)}</div>`;
+}
+
+// The two air models the PCM carries. Where they disagree is where the MAF
+// table and the VE table disagree — visible on an ordinary closed-loop log,
+// which is what makes this useful before any open-loop work is possible.
+function airModelsHtml(a) {
+  if (!a) return "";
+  if (!a.present) return `<div class="note" style="margin-top:12px">MAF vs speed-density check unavailable — ${esc(a.reason)}.</div>`;
+  const big = Math.abs(a.overallDiffPct) > 3;
+  return `
+    <h3 style="margin-top:18px">MAF vs speed-density</h3>
+    <div class="note">${esc(a.dynAirChannel)} against ${esc(a.mafChannel)}, ${a.samples} samples ·
+      overall <b style="color:${big ? "var(--warn)" : "inherit"}">${a.overallDiffPct > 0 ? "+" : ""}${a.overallDiffPct}%</b></div>
+    <table><tr><th>RPM</th><th>Load (kPa)</th><th>Samples</th><th>Dyn air (g/s)</th><th>MAF (g/s)</th><th>Difference</th></tr>
+    ${a.cells.filter(c => c.enoughData).sort((p, q) => p.x - q.x || q.y - p.y).map(c => `<tr>
+      <td class="num">${c.x}–${c.x + a.rpmBin}</td><td class="num">${c.y}</td><td class="num">${c.n}</td>
+      <td class="num">${c.dynAirGs.toFixed(2)}</td><td class="num">${c.mafGs.toFixed(2)}</td>
+      <td class="num"><b>${c.diffPct > 0 ? "+" : ""}${c.diffPct}%</b></td></tr>`).join("")}</table>
+    <div class="note">${esc(a.note)}</div>`;
+}
+
+// VE is tuned open loop on the wideband. When there is no open-loop data the
+// honest answer is a refusal with the reason, not a grid of zeroes.
+function veHtml(v) {
+  if (!v) return "";
+  if (!v.present) return `
+    <h3 style="margin-top:18px">VE correction</h3>
+    <div class="note"><b>Not computed</b> — ${esc(v.reason)}.${v.why ? ` ${esc(v.why)}` : ""}</div>`;
+  return `
+    <h3 style="margin-top:18px">VE correction — open loop only</h3>
+    <div class="note">${v.openLoopSamples} open-loop samples, ${v.closedLoopSkipped} closed-loop rows skipped ·
+      open loop identified by ${esc(v.openLoopBasis)}</div>
+    <table><tr><th>RPM</th><th>Load (kPa)</th><th>Samples</th><th>Measured λ</th><th>Commanded λ</th><th>Multiply VE by</th><th>Change</th></tr>
+    ${v.cells.sort((p, q) => p.x - q.x || q.y - p.y).map(c => `<tr${c.enoughData ? "" : ' style="opacity:.45"'}>
+      <td class="num">${c.x}–${c.x + v.rpmBin}</td><td class="num">${c.y}</td><td class="num">${c.n}</td>
+      <td class="num">${c.avgMeasuredLambda}</td><td class="num">${c.avgCommandedLambda}</td>
+      <td class="num"><b>${c.multiplier}</b></td>
+      <td class="num">${c.changePct > 0 ? "+" : ""}${c.changePct}%</td></tr>`).join("")}</table>
+    <div class="note">Greyed rows are below ${v.minSamples} samples — shown for completeness, not for applying. ${esc(v.note)}</div>`;
 }
 
 // Wideband is the only thing that can see open loop and WOT — where trims

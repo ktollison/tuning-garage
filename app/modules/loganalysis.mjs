@@ -28,6 +28,10 @@ const PATTERNS = {
   tps:         [/\btps\b/i, /throttle\s*position/i, /pedal/i],
   map:         [/\bmap\b/i, /manifold\s*abs/i],
   load:        [/\bload\b/i, /cylinder\s*airmass/i, /air\s*mass/i],
+  // The PCM's final airflow figure. On a MAF-primary Gen 3 tune it tracks the
+  // MAF closely; where it does not, the speed-density (VE) side is contributing
+  // — which is exactly the handoff worth seeing.
+  dynAir:      [/dyn(amic)?\s*air/i],
   pe:          [/power\s*enrich/i, /\bpe\b/i],
   closedLoop:  [/closed.?loop/i, /fuel\s*sys/i, /\bcl\b/i],
   knockRetard: [/knock\s*retard/i, /\bkr\b/i],
@@ -447,14 +451,33 @@ export function binByAxis(kept, ch, axisRole = "mafHz", binSize = 500, minSample
   };
 }
 
+// The load axis must be binned in the units the CALIBRATION TABLE uses, not the
+// units the log happened to record. GM VE and spark tables are indexed in kPa;
+// this car logs manifold pressure in psi, so a 10-unit bin — correct for kPa —
+// collapsed the entire 11–97 kPa range into two rows, 0 and 10 psi. Every
+// load-resolved map was effectively one-dimensional and said nothing.
+//
+// Returns a function converting this channel's values to kPa, or null when the
+// log does not state a unit — in which case we bin raw and say so, rather than
+// guessing, exactly as the coolant threshold does.
+export function loadToKpa(channelUnits, role = "map") {
+  const u = channelUnits?.[role];
+  if (!u || u.quantity !== "pressure" || !u.unit) return null;
+  if (u.unit === "kPa") return v => v;
+  return v => convert(v, u.unit, "kPa");
+}
+
 // ---------- 2D heat map: average value over an X/Y grid ----------
-export function heatmap(kept, ch, xRole, yRole, xBin, yBin, minSamples = 5) {
+// yScale converts the Y value before binning (see loadToKpa).
+export function heatmap(kept, ch, xRole, yRole, xBin, yBin, minSamples = 5, yScale = null) {
   const xi = ch[xRole], yi = ch[yRole];
   if (xi === undefined || yi === undefined) return { error: `need both ${xRole} and ${yRole} in the log` };
   const cells = new Map();
   for (const k of kept) {
-    const x = num(k.row, xi), y = num(k.row, yi);
+    const x = num(k.row, xi);
+    let y = num(k.row, yi);
     if (x === null || y === null) continue;
+    if (yScale) y = yScale(y);
     const xk = Math.floor(x / xBin) * xBin, yk = Math.floor(y / yBin) * yBin;
     const key = `${xk}|${yk}`;
     if (!cells.has(key)) cells.set(key, { x: xk, y: yk, n: 0, sum: 0 });
@@ -622,7 +645,12 @@ export function analyzeSpark(parsed, ch, channelUnits, opts = {}) {
 
   const yRole = ch.map !== undefined ? "map" : (ch.load !== undefined ? "load" : null);
   const rpmBin = opts.sparkRpmBin || 500;
-  const loadBin = opts.sparkLoadBin || 10;
+  // 10 is a kPa bin, so the values must BE kPa. Without this a psi log gave
+  // two rows for the whole range and the map said nothing.
+  const yScale = yRole === "map" ? loadToKpa(channelUnits, "map") : null;
+  const loadUnit = yRole === "map" ? (yScale ? "kPa" : (channelUnits?.map?.unit ?? null))
+                                   : (channelUnits?.[yRole]?.unit ?? null);
+  const loadBin = opts.sparkLoadBin || (yRole === "map" && !yScale ? 2 : 10);
   const krThreshold = opts.krThreshold ?? 0.1;     // ° of retard that counts as knock
 
   const krCells = new Map(), sparkCells = new Map();
@@ -634,7 +662,8 @@ export function analyzeSpark(parsed, ch, channelUnits, opts = {}) {
     const rpm = num(row, ch.rpm);
     if (rpm !== null && rpm < 500) { if (cur) { events.push(cur); cur = null; } continue; }
     running++;
-    const y = yRole ? num(row, ch[yRole]) : null;
+    let y = yRole ? num(row, ch[yRole]) : null;
+    if (y !== null && yScale) y = yScale(y);
     const kr = krIdx === undefined ? null : num(row, krIdx);
     const adv = ch.spark === undefined ? null : num(row, ch.spark);
     const iat = num(row, ch.iat), ect = num(row, ch.ect), tps = num(row, ch.tps);
@@ -642,9 +671,12 @@ export function analyzeSpark(parsed, ch, channelUnits, opts = {}) {
     if (rpm !== null && y !== null) {
       const key = `${Math.floor(rpm / rpmBin) * rpmBin}|${Math.floor(y / loadBin) * loadBin}`;
       if (kr !== null) {
-        const c = krCells.get(key) || { x: Math.floor(rpm / rpmBin) * rpmBin, y: Math.floor(y / loadBin) * loadBin, n: 0, max: 0, hits: 0 };
+        const c = krCells.get(key) || { x: Math.floor(rpm / rpmBin) * rpmBin, y: Math.floor(y / loadBin) * loadBin, n: 0, max: 0, hits: 0, iatSum: 0, iatN: 0 };
         c.n++; if (kr > c.max) c.max = kr;
-        if (kr >= krThreshold) c.hits++;
+        if (kr >= krThreshold) {
+          c.hits++;
+          if (iat !== null) { c.iatSum += iat; c.iatN++; }   // only IAT while knocking
+        }
         krCells.set(key, c);
       }
       if (adv !== null) {
@@ -677,7 +709,29 @@ export function analyzeSpark(parsed, ch, channelUnits, opts = {}) {
     suspectFalse: e.tps !== null && e.tps < 25,
   })).sort((a, b) => b.peakKr - a.peakKr);
 
-  const krList = [...krCells.values()].map(c => ({ ...c, max: round(c.max) }));
+  // The documented Gen 3 procedure: subtract the knock retard seen in a cell
+  // from the corresponding High Octane spark cell. MAX, never mean — one hard
+  // event is what matters, and averaging it away is how detonation gets tuned
+  // around instead of out.
+  const hotIat = opts.hotIatF ?? 100;              // °F above which IAT retard is the likelier cause
+  const iatUnit = channelUnits?.iat?.unit ?? null;
+  const hotIatInLogUnit = iatUnit && channelUnits.iat.quantity === "temperature"
+    ? convert(hotIat, "°F", iatUnit) : null;
+  const krList = [...krCells.values()].map(c => {
+    const iatAvg = c.iatN ? c.iatSum / c.iatN : null;
+    const iatSuspect = iatAvg !== null && hotIatInLogUnit !== null && iatAvg >= hotIatInLogUnit;
+    return {
+      ...c, max: round(c.max),
+      // rounded to 0.5° — finer than the table resolution is false precision
+      suggestedSparkDelta: c.max >= krThreshold ? -(Math.round(c.max * 2) / 2) : 0,
+      iatWhileKnocking: iatAvg === null ? null : round(iatAvg),
+      iatSuspect,
+      advice: c.max < krThreshold ? null
+        : iatSuspect
+          ? "Knock here coincides with high intake air temperature — look at the IAT spark-retard table before pulling timing from the main table."
+          : "Subtract this from the High Octane main spark cell, then re-log.",
+    };
+  });
   const sparkList = [...sparkCells.values()].map(c => ({ x: c.x, y: c.y, n: c.n, avg: round(c.sum / c.n, 1), max: round(c.max, 1) }));
   const axes = list => ({
     xs: [...new Set(list.map(c => c.x))].sort((a, b) => a - b),
@@ -690,14 +744,21 @@ export function analyzeSpark(parsed, ch, channelUnits, opts = {}) {
     hasSparkChannel: ch.spark !== undefined,
     krChannel: krIdx === undefined ? null : parsed.headers[krIdx],
     sparkChannel: ch.spark === undefined ? null : parsed.headers[ch.spark],
-    yRole, yUnit: yRole ? (channelUnits[yRole]?.unit ?? null) : null,
+    yRole, yUnit: loadUnit,
     rpmBin, loadBin, krThreshold,
     runningSamples: running,
     krSamples,
     eventCount: evs.length,
     worst,
     events: evs.slice(0, 25),
-    krMap: krCells.size ? { cells: krList, ...axes(krList), valueUnit: "° crank (max retard in cell)" } : null,
+    krMap: krCells.size ? { cells: krList, ...axes(krList), valueUnit: "° crank (max retard in cell)",
+                            suggestionUnit: "° crank to subtract from the High Octane table",
+                            iatUnit, hotIatThreshold: hotIatInLogUnit === null ? null : round(hotIatInLogUnit) } : null,
+    sparkSuggestions: krList.filter(c => c.suggestedSparkDelta !== 0)
+      .sort((a, b) => b.max - a.max)
+      .map(c => ({ rpm: c.x, load: c.y, maxKr: c.max, delta: c.suggestedSparkDelta,
+                   samples: c.hits, iat: c.iatWhileKnocking, iatSuspect: c.iatSuspect, advice: c.advice })),
+    blendCaveat: "Logged spark advance is the PCM's blend of the High and Low Octane tables, weighted by the knock learn factor — a single logged figure cannot be attributed to one table. Subtractions target the High Octane table because that is where the procedure applies them; verify against your own calibration.",
     sparkMap: sparkCells.size ? { cells: sparkList, ...axes(sparkList), valueUnit: "° crank (average advance)" } : null,
     units: { kr: "° crank", spark: "° crank", load: yRole ? (channelUnits[yRole]?.unit ?? "unit not stated") : null },
     note: "Knock-retard cells show the MAXIMUM in each cell, not the average — a single hard event matters more than a quiet average. Draft readings.",
@@ -782,13 +843,192 @@ export function analyze(text, opts = {}) {
       multiplierUnit: "dimensionless ratio",
     },
     heat: {
-      ...heatmap(filtered.kept, ch, "rpm", yRole, 500, 10, 5),
+      ...heatmap(filtered.kept, ch, "rpm", yRole, 500,
+                 yRole === "map" && !loadToKpa(channelUnits, "map") ? 2 : 10, 5,
+                 yRole === "map" ? loadToKpa(channelUnits, "map") : null),
       xUnit: channelUnits.rpm?.unit ?? "RPM",
-      yUnit: channelUnits[yRole]?.unit ?? null,
+      yUnit: yRole === "map" && loadToKpa(channelUnits, "map") ? "kPa" : (channelUnits[yRole]?.unit ?? null),
       valueUnit: "%",
     },
     wideband: analyzeWideband(parsed, ch, channelUnits, opts),
     spark: analyzeSpark(parsed, ch, channelUnits, opts),
+    airModels: analyzeAirModels(parsed, ch, channelUnits, opts),
+    ve: analyzeVE(parsed, ch, channelUnits, opts),
     note: "Draft readings for review. Suggestions are computed from filtered log data and must be applied by hand after you agree with them — nothing here writes to a tune.",
+  };
+}
+
+// ---------- MAF vs speed-density agreement (Gen 3) ----------
+// Where the two air models disagree is where the MAF table and the VE table
+// disagree. This needs no wideband and no open loop, because it compares two
+// airflow estimates against each other rather than against measured fuelling —
+// so it runs on an ordinary closed-loop cruise log, which VE correction cannot.
+//
+// Binned on the VE table's own axes (RPM x kPa) so a disagreement points at a
+// cell you can actually go and look at.
+//
+// Draft readings. A divergence says the models differ, not which one is right.
+export function analyzeAirModels(parsed, ch, channelUnits, opts = {}) {
+  if (ch.dynAir === undefined || ch.mafGs === undefined)
+    return { present: false, reason: "needs both a dynamic-airflow and a mass-airflow channel" };
+  if (ch.rpm === undefined || ch.map === undefined)
+    return { present: false, reason: "needs RPM and MAP to bin on the VE table's axes" };
+
+  const toGs = (role) => {
+    const u = channelUnits?.[role];
+    if (!u?.unit || u.quantity !== "airflow") return null;
+    return u.unit === "g/s" ? (v => v) : (v => convert(v, u.unit, "g/s"));
+  };
+  const dynGs = toGs("dynAir"), mafGs = toGs("mafGs");
+  if (!dynGs || !mafGs)
+    return { present: false,
+             reason: "airflow channels carry no unit in their headers, so the two cannot be compared without guessing" };
+
+  const yScale = loadToKpa(channelUnits, "map");
+  if (!yScale)
+    return { present: false, reason: "manifold pressure has no unit, so it cannot be binned in kPa" };
+
+  const rpmBin = opts.airRpmBin || 500, loadBin = opts.airLoadBin || 10;
+  const minSamples = opts.minSamples || 20;
+  const cells = new Map();
+  let n = 0, sumDyn = 0, sumMaf = 0;
+
+  for (const row of parsed.rows) {
+    const rpm = num(row, ch.rpm), rawMap = num(row, ch.map);
+    const d = num(row, ch.dynAir), m = num(row, ch.mafGs);
+    if (rpm === null || rawMap === null || d === null || m === null) continue;
+    if (rpm < 500) continue;
+    const dg = dynGs(d), mg = mafGs(m);
+    if (!(mg > 0)) continue;                       // no ratio against zero airflow
+    const x = Math.floor(rpm / rpmBin) * rpmBin;
+    const y = Math.floor(yScale(rawMap) / loadBin) * loadBin;
+    const key = `${x}|${y}`;
+    const c = cells.get(key) || { x, y, n: 0, dyn: 0, maf: 0 };
+    c.n++; c.dyn += dg; c.maf += mg;
+    cells.set(key, c);
+    n++; sumDyn += dg; sumMaf += mg;
+  }
+  if (!n) return { present: false, reason: "no rows carried RPM, MAP and both airflow channels together" };
+
+  const list = [...cells.values()].map(c => {
+    const dyn = c.dyn / c.n, maf = c.maf / c.n;
+    return { x: c.x, y: c.y, n: c.n,
+             dynAirGs: +dyn.toFixed(3), mafGs: +maf.toFixed(3),
+             // positive = the PCM's airflow exceeds what the MAF alone reports
+             diffPct: +(((dyn / maf) - 1) * 100).toFixed(1),
+             enoughData: c.n >= minSamples };
+  });
+  const usable = list.filter(c => c.enoughData);
+  const worst = usable.slice().sort((a, b) => Math.abs(b.diffPct) - Math.abs(a.diffPct))[0] || null;
+
+  return {
+    present: true,
+    dynAirChannel: parsed.headers[ch.dynAir], mafChannel: parsed.headers[ch.mafGs],
+    rpmBin, loadBin, minSamples, samples: n,
+    overallDiffPct: +(((sumDyn / sumMaf) - 1) * 100).toFixed(1),
+    worst,
+    cells: list,
+    xs: [...new Set(list.map(c => c.x))].sort((a, b) => a - b),
+    ys: [...new Set(list.map(c => c.y))].sort((a, b) => b - a),
+    units: { airflow: "g/s", load: "kPa", rpm: "RPM", diff: "%" },
+    note: "Positive means the PCM's dynamic airflow exceeds the mass-airflow reading alone — the speed-density side is adding air. Close agreement means the VE and MAF tables tell the same story in that cell; it does not mean either is correct. Draft readings.",
+  };
+}
+
+// ---------- VE correction (Gen 3, open loop only) ----------
+// The Gen 3 VE table is indexed RPM x MAP(kPa) and holds cylinder fill against
+// theoretical maximum. The published procedure tunes it in OPEN LOOP from
+// wideband error alone, applying the percentage error straight to the cell.
+//
+// Closed-loop data is deliberately refused. With the narrowband in control the
+// PCM has already corrected the mixture through the fuel trims, so measured
+// lambda sits at commanded by construction and the cell error reads as zero.
+// Worse, on a MAF-primary tune those trims describe the MAF table, not the VE
+// table — feeding them into VE would move the wrong table using a number that
+// does not mean what it appears to.
+//
+// Direction: VE tells the PCM how much air is in the cylinder. Too high and it
+// over-estimates air, injects too much fuel, and the mixture comes out RICH.
+// So measured richer than commanded => reduce VE. factor = lambda_measured /
+// lambda_commanded, applied multiplicatively.
+export function analyzeVE(parsed, ch, channelUnits, opts = {}) {
+  const wb = analyzeWideband(parsed, ch, channelUnits, opts);
+  if (!wb.present) return { present: false, reason: `no usable wideband: ${wb.reason || "not found"}` };
+  if (ch.commandedAfr === undefined)
+    return { present: false, reason: "needs a commanded-mixture channel to compute the error against" };
+  if (ch.rpm === undefined || ch.map === undefined)
+    return { present: false, reason: "needs RPM and MAP to bin on the VE table's axes" };
+
+  const yScale = loadToKpa(channelUnits, "map");
+  if (!yScale) return { present: false, reason: "manifold pressure has no unit, so it cannot be binned in kPa" };
+
+  const fuel = FUELS[opts.fuel || "gasoline"] || FUELS.gasoline;
+  const wbScale = wb.scale.scale, cmdScale = wb.commandedScale?.scale;
+  const wbIdx = ch.widebandAfr, cmdIdx = ch.commandedAfr;
+
+  const rpmBin = opts.veRpmBin || 500, loadBin = opts.veLoadBin || 10;
+  const minSamples = opts.minSamples || 20;
+  const cells = new Map();
+  let openLoop = 0, closedLoopSkipped = 0;
+
+  for (const row of parsed.rows) {
+    const rpm = num(row, ch.rpm), rawMap = num(row, ch.map);
+    const meas = toLambda(num(row, wbIdx), wbScale, fuel.stoich);
+    const cmd = toLambda(num(row, cmdIdx), cmdScale, fuel.stoich);
+    if (rpm === null || rawMap === null || meas === null || cmd === null || rpm < 500) continue;
+
+    // Open loop = the PCM is not trimming to the narrowband. A commanded
+    // mixture away from stoichiometric is the reliable marker; an explicit
+    // closed-loop flag, when logged, is better still.
+    const flagged = ch.closedLoop !== undefined ? isOn(row[ch.closedLoop]) : null;
+    const isOpenLoop = flagged === false || (flagged === null && Math.abs(cmd - 1) > 0.02);
+    if (!isOpenLoop) { closedLoopSkipped++; continue; }
+    if (!(cmd > 0)) continue;
+
+    const x = Math.floor(rpm / rpmBin) * rpmBin;
+    const y = Math.floor(yScale(rawMap) / loadBin) * loadBin;
+    const key = `${x}|${y}`;
+    const c = cells.get(key) || { x, y, n: 0, sumFactor: 0, sumMeas: 0, sumCmd: 0 };
+    c.n++; c.sumFactor += meas / cmd; c.sumMeas += meas; c.sumCmd += cmd;
+    cells.set(key, c);
+    openLoop++;
+  }
+
+  if (!openLoop) {
+    return {
+      present: false,
+      closedLoopSkipped,
+      reason: "no open-loop samples in this log, so no VE correction can be computed",
+      why: "VE is tuned open loop on the wideband. In closed loop the PCM holds the mixture at commanded through the fuel trims, so the cell error reads as zero however wrong the VE table is — and on a MAF-primary tune those trims describe the MAF table, not VE. Log a WOT pull, or a session with the MAF disabled, and run this again.",
+    };
+  }
+
+  const list = [...cells.values()].map(c => {
+    const factor = c.sumFactor / c.n;
+    return {
+      x: c.x, y: c.y, n: c.n,
+      avgMeasuredLambda: +(c.sumMeas / c.n).toFixed(3),
+      avgCommandedLambda: +(c.sumCmd / c.n).toFixed(3),
+      multiplier: +factor.toFixed(4),
+      changePct: +((factor - 1) * 100).toFixed(1),
+      enoughData: c.n >= minSamples,
+    };
+  });
+
+  return {
+    present: true,
+    channel: parsed.headers[wbIdx], commandedChannel: parsed.headers[cmdIdx],
+    scale: wb.scale, commandedScale: wb.commandedScale,
+    fuel: { key: opts.fuel || "gasoline", ...fuel },
+    openLoopSamples: openLoop, closedLoopSkipped,
+    openLoopBasis: ch.closedLoop !== undefined
+      ? `the Fuel System Status channel (${parsed.headers[ch.closedLoop]})`
+      : "commanded mixture more than 2% from stoichiometric — no Fuel System Status channel was logged, so this is an inference",
+    rpmBin, loadBin, minSamples,
+    cells: list,
+    xs: [...new Set(list.map(c => c.x))].sort((a, b) => a - b),
+    ys: [...new Set(list.map(c => c.y))].sort((a, b) => b - a),
+    units: { load: "kPa", rpm: "RPM", multiplier: "dimensionless ratio", change: "%" },
+    note: "Multiply the VE cell by the multiplier — measured richer than commanded means VE is over-estimating air and must come down. Cells below the sample threshold are shown but should not be applied. Draft readings: confirm the wideband's scale and your fuel before touching a table, and change one region at a time.",
   };
 }

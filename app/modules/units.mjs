@@ -16,7 +16,9 @@
 export const QUANTITIES = {
   temperature: { canonical: "°F", units: ["°F", "°C"] },
   pressure:    { canonical: "kPa", units: ["kPa", "psi", "inHg", "bar"] },
-  airflow:     { canonical: "g/s", units: ["g/s", "lb/min"] },
+  // HP Tuners logs mass airflow in lb/min but the derived airflow channels
+  // (Dynamic Airflow, Idle Desired Airflow, Injector Flow Rate) in lb/h.
+  airflow:     { canonical: "g/s", units: ["g/s", "lb/min", "lb/h"] },
   speed:       { canonical: "mph", units: ["mph", "km/h"] },
 };
 
@@ -28,6 +30,7 @@ const TO_CANONICAL = {
   "bar": v => v * 100,
   "g/s": v => v,
   "lb/min": v => v * (453.59237 / 60),
+  "lb/h":   v => v * (453.59237 / 3600),
   "mph": v => v,
   "km/h": v => v / 1.609344,
 };
@@ -38,6 +41,7 @@ const FROM_CANONICAL = {
   "bar": v => v / 100,
   "g/s": v => v,
   "lb/min": v => v / (453.59237 / 60),
+  "lb/h":   v => v / (453.59237 / 3600),
   "mph": v => v,
   "km/h": v => v * 1.609344,
 };
@@ -82,6 +86,8 @@ const UNIT_PATTERNS = [
   [/\bin\.?\s*hg\b|inches\s*hg/i, "inHg"],
   [/\bbar\b/i, "bar"],
   [/\blb\s*\/?\s*min\b|lbs?\/min|pounds?\s*per\s*min/i, "lb/min"],
+  // after lb/min so "lb/min" can never be read as an hourly rate
+  [/\blb\s*\/?\s*(h|hr|hour)\b|lbs?\/(h|hr)|pounds?\s*per\s*(h|hr|hour)\b/i, "lb/h"],
   [/\bg\s*\/\s*s\b|grams?\s*per\s*sec|\bgps\b/i, "g/s"],
   [/\bkm\s*\/?\s*h\b|kph|km\/hr/i, "km/h"],
   [/\bmph\b|miles\s*per\s*hour/i, "mph"],
