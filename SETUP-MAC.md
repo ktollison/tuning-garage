@@ -193,6 +193,44 @@ always safe to run.
 The app binds to **127.0.0.1 only** — nothing is exposed to your network — and
 has zero dependencies.
 
+### Alerts when someone submits (maintainers only)
+
+Only useful if you run the public project. Two paths, deliberately overlapping:
+
+```bash
+sh scripts/autostart-macos.sh watch-install
+```
+
+That polls the public repo every 15 minutes and pushes a notification for
+anything new. It catches **fork pull requests**, which the GitHub Actions alert
+cannot — GitHub withholds secrets from fork workflows by design, and a fork PR
+is exactly how a git-literate contributor submits.
+
+Alerts need a Pushover application token and user key in
+`~/.config/tuning-garage/pushover.env`:
+
+```bash
+mkdir -p ~/.config/tuning-garage && chmod 700 ~/.config/tuning-garage
+```
+
+```bash
+printf 'PUSHOVER_TOKEN=your-app-token\nPUSHOVER_USER=your-user-key\n' > ~/.config/tuning-garage/pushover.env
+```
+
+```bash
+chmod 600 ~/.config/tuning-garage/pushover.env
+```
+
+The token never goes in the repository. Without that file the poller still runs
+and simply sends nothing, so this is safe to install before setting it up.
+Test it with:
+
+```bash
+sh scripts/notify-pushover.sh --title "Tuning Garage" --message "alerting works"
+```
+
+Remove with `sh scripts/autostart-macos.sh watch-uninstall`.
+
 ---
 
 ## Daily two-machine rhythm

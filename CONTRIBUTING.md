@@ -71,7 +71,24 @@ there is something concrete to act on.
 
 ## Two ways to submit
 
-### Open an issue (easiest)
+### Let the tool do it (easiest)
+
+```bash
+node scripts/submit-log.mjs yourlog.csv
+```
+
+It scrubs the log and **refuses to go any further if anything identifying
+survives**, runs the analyser, writes a bundle, and opens the issue for you when
+the GitHub CLI is installed and signed in. Without `gh` it stops after the
+bundle and tells you exactly what to paste and attach — you are never stuck.
+
+Add `--dry-run` to build the bundle and send nothing.
+
+The bundle is written **outside this repository**, under
+`~/.local/share/tuning-garage/submissions/`, so a submission can never be
+committed by accident.
+
+### Open an issue by hand
 
 Use one of the [issue forms](../../issues/new/choose). The log-submission form
 takes a `.csv` directly. Good for a one-off — a maintainer picks it up from

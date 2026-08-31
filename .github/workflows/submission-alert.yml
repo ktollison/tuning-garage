@@ -1,0 +1,51 @@
+name: Submission alert
+
+# Pushes a Pushover notification when a submission arrives.
+#
+# This is the immediate path; it fires whether or not the maintainer's machine
+# is on. It CANNOT cover pull requests from forks — GitHub withholds secrets
+# from those by design, which is correct, and it is also exactly how a
+# git-literate contributor submits. scripts/watch-submissions.mjs runs locally
+# and catches those. The two overlap deliberately; the poller debounces on
+# issue number so an item alerted here is not announced twice.
+#
+# Setup: add PUSHOVER_TOKEN and PUSHOVER_USER as repository secrets. With
+# either absent this workflow no-ops rather than failing, so a fork of this
+# project does not get a permanently red Actions tab.
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  contents: read
+
+jobs:
+  alert:
+    runs-on: ubuntu-latest
+    # Only submissions. Ordinary bug reports are not worth a phone buzz.
+    if: contains(join(github.event.issue.labels.*.name, ','), 'submission')
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Push the alert
+        env:
+          PUSHOVER_TOKEN: ${{ secrets.PUSHOVER_TOKEN }}
+          PUSHOVER_USER: ${{ secrets.PUSHOVER_USER }}
+          TITLE: "Tuning Garage: new submission #${{ github.event.issue.number }}"
+          BODY: "${{ github.event.issue.title }} — from ${{ github.event.issue.user.login }}"
+          URL: ${{ github.event.issue.html_url }}
+        run: |
+          if [ -z "${PUSHOVER_TOKEN}" ] || [ -z "${PUSHOVER_USER}" ]; then
+            echo "No Pushover secrets configured — skipping (this is not a failure)."
+            exit 0
+          fi
+          # Reuse the same script the maintainer runs locally, so the retry
+          # rules, the trimming and the read-success-from-the-body check are
+          # defined once rather than reimplemented in YAML.
+          mkdir -p "$HOME/.config/tuning-garage"
+          umask 177
+          printf 'PUSHOVER_TOKEN=%s\nPUSHOVER_USER=%s\n' "$PUSHOVER_TOKEN" "$PUSHOVER_USER" \
+            > "$HOME/.config/tuning-garage/pushover.env"
+          sh scripts/notify-pushover.sh --title "$TITLE" --message "$BODY" \
+            --url "$URL" --url-title "Open the submission"

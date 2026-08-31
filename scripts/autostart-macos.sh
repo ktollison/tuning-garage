@@ -71,9 +71,18 @@ install)
 </plist>
 PLISTEOF
 
-  # bootout first so "install" is safe to re-run after an edit
+  # bootout first so "install" is safe to re-run after an edit. launchd does not
+  # finish the unload synchronously, and bootstrapping into a label it is still
+  # tearing down fails with "Bootstrap failed: 5: Input/output error" — which
+  # leaves NOTHING running, because the bootout did succeed. Wait for the label
+  # to actually disappear, then retry once.
   launchctl bootout "$TARGET/$LABEL" 2>/dev/null || true
-  launchctl bootstrap "$TARGET" "$PLIST"
+  i=0
+  while launchctl print "$TARGET/$LABEL" >/dev/null 2>&1 && [ $i -lt 10 ]; do sleep 0.5; i=$((i + 1)); done
+  if ! launchctl bootstrap "$TARGET" "$PLIST" 2>/dev/null; then
+    sleep 2
+    launchctl bootstrap "$TARGET" "$PLIST"
+  fi
   launchctl enable "$TARGET/$LABEL" 2>/dev/null || true
 
   echo "Installed $LABEL"
@@ -126,8 +135,49 @@ uninstall)
   echo "Removed $LABEL. Logs left in $REPO/logs/."
   ;;
 
+watch-install)
+  # A second agent, on a timer rather than KeepAlive: it runs, alerts, exits.
+  mkdir -p "$HOME/Library/LaunchAgents" "$REPO/logs"
+  WLABEL="com.tuninggarage.watch"
+  WPLIST="$HOME/Library/LaunchAgents/$WLABEL.plist"
+  INTERVAL="${WATCH_INTERVAL:-900}"
+  cat > "$WPLIST" <<PLISTEOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key><string>$WLABEL</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>$NODE</string>
+        <string>$REPO/scripts/watch-submissions.mjs</string>
+    </array>
+    <key>WorkingDirectory</key><string>$REPO</string>
+    <!-- gh lives in /usr/local/bin or /opt/homebrew/bin; launchd's PATH has neither -->
+    <key>EnvironmentVariables</key>
+    <dict><key>PATH</key><string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string></dict>
+    <key>StartInterval</key><integer>$INTERVAL</integer>
+    <key>RunAtLoad</key><true/>
+    <key>StandardOutPath</key><string>$REPO/logs/watch.out.log</string>
+    <key>StandardErrorPath</key><string>$REPO/logs/watch.err.log</string>
+</dict>
+</plist>
+PLISTEOF
+  launchctl bootout "$TARGET/$WLABEL" 2>/dev/null || true
+  launchctl bootstrap "$TARGET" "$WPLIST"
+  echo "Installed $WLABEL — polling every ${INTERVAL}s"
+  echo "  alerts need $HOME/.config/tuning-garage/pushover.env (chmod 600)"
+  echo "  without it the poller runs and quietly sends nothing"
+  ;;
+
+watch-uninstall)
+  launchctl bootout "$TARGET/com.tuninggarage.watch" 2>/dev/null || true
+  rm -f "$HOME/Library/LaunchAgents/com.tuninggarage.watch.plist"
+  echo "Removed com.tuninggarage.watch"
+  ;;
+
 *)
-  echo "usage: sh scripts/autostart-macos.sh [install|status|restart|uninstall]"
+  echo "usage: sh scripts/autostart-macos.sh [install|status|restart|uninstall|watch-install|watch-uninstall]"
   exit 1
   ;;
 esac
