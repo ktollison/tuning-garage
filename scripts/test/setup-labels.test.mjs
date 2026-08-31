@@ -53,7 +53,15 @@ console.log("— every label a form asks for is described —");
 
 console.log("— the alert workflow and the forms agree on the label —");
 {
-  const wf = fs.readFileSync(path.join(REPO, "export-overrides/.github/workflows/submission-alert.yml"), "utf8");
+  // In this repo the workflow is an export override; in the exported kit it has
+  // been applied and sits at its final path. Assert on wherever it actually is.
+  const candidates = [
+    path.join(REPO, ".github/workflows/submission-alert.yml"),
+    path.join(REPO, "export-overrides/.github/workflows/submission-alert.yml"),
+  ];
+  const found = candidates.find(p => fs.existsSync(p));
+  t(!!found, `the alert workflow exists (${found ? path.relative(REPO, found) : "nowhere"})`);
+  const wf = fs.readFileSync(found, "utf8");
   const filter = /contains\(join\(github\.event\.issue\.labels\.\*\.name.*?'([a-z-]+)'\)/.exec(wf);
   t(!!filter, "the workflow filters on a label");
   const forms = fs.readdirSync(FORMS).filter(f => f.endsWith(".yml") && f !== "config.yml")
