@@ -227,9 +227,19 @@ everything above it:
   disappears. Retard under light throttle is flagged as possible false knock
   (the sensor hearing the road); retard at high load is real until proven
   otherwise.
-- **Wideband** covers what trims cannot: open loop and wide-open throttle. Lean
-  at high load is a stop-and-investigate — check fuel supply and injector
+- **Wideband** covers what trims cannot: open loop, power enrichment and
+  wide-open throttle. Lean is judged against **what the PCM commanded** — a
+  warning fires more than 3% leaner than asked, with λ 1.0 as a backstop — so
+  λ 0.95 when 0.85 was commanded is caught even though it is richer than
+  stoichiometric. Enrichment counts whether or not the throttle reached 80%.
+  Lean at high load is a stop-and-investigate: check fuel supply and injector
   capacity before adding any timing.
+- **Two stoichiometric ratios**, shown at the top of the wideband section. Your
+  wideband's AFR is lambda × the stoich its controller displays (14.7 on most,
+  whatever fuel you run); the PCM's commanded AFR is lambda × the PCM's own
+  stoich, which the app derives from the log. If your wideband is set to display
+  another fuel, change "Wideband displays AFR at" — not the fuel setting, which
+  only changes how AFR is shown.
 - **The closed-loop cross-check** catches the nasty case where trims look happy
   but the wideband disagrees, which means the O2s or the commanded table are
   suspect and the corrections above shouldn't be trusted yet.

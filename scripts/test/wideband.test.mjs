@@ -53,9 +53,22 @@ console.log("— trims still work alongside —");
 t(r.keptCount === 40, `trim analysis unaffected (${r.keptCount} cruise rows kept; PE/open-loop rows excluded as before)`);
 
 console.log("— E85 changes the AFR math, not the lambda —");
+// This section's header always stated the right principle, but its assertion
+// checked the opposite — that choosing E85 rescaled the wideband reading. That
+// was the bug: fuel conflated with the wideband's DISPLAY stoich. A wideband
+// measures lambda and shows AFR at whatever stoich its controller is set to,
+// independent of the fuel in the tank.
+const gas = analyze([H, ...rows].join("\n"));
 const e85 = analyze([H, ...rows].join("\n"), { fuel: "e85" });
-t(e85.wideband.fuel.stoich === 9.765, "E85 stoich applied");
-t(near(e85.wideband.wot[1].avgLambda, 15.4 / 9.765, 0.01), "same AFR reading is a very different lambda on E85");
+t(e85.wideband.fuel.stoich === 9.765, "E85 stoich used for display");
+t(e85.wideband.wot[1].avgLambda === gas.wideband.wot[1].avgLambda,
+  `choosing E85 does not change the measured lambda (${gas.wideband.wot[1].avgLambda} both)`);
+t(e85.wideband.wot[1].avgAfr !== gas.wideband.wot[1].avgAfr,
+  "it does change the AFR shown, which is what the fuel setting is for");
+// A wideband that genuinely displays E85 AFR is declared as such, separately.
+const e85Display = analyze([H, ...rows].join("\n"), { fuel: "e85", widebandStoich: 9.765 });
+t(near(e85Display.wideband.wot[1].avgLambda, 15.4 / 9.765, 0.01),
+  "a wideband set to display E85 is read with widebandStoich, not the fuel setting");
 
 console.log("— no wideband: reports absence, doesn't crash —");
 const noWb = analyze(["Time (s),Engine Speed (RPM),LTFT (%),STFT (%),ECT (F),TPS (%),Closed Loop,Power Enrichment",

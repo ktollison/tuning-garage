@@ -108,11 +108,17 @@ export function makeEval(equation) {
       else if (typeof t === "object") st.push(x);
       else {
         const b = st.pop(), a = st.pop() ?? 0;
-        st.push(t === "+" ? a + b : t === "-" ? a - b : t === "*" ? a * b : t === "/" ? (b === 0 ? 0 : a / b) : Math.pow(a, b));
+        // Division by zero is undefined, not zero. Returning 0 made a scaling
+        // equation like 1000/X on a raw zero display a plausible-looking 0 in
+        // the table browser and the diff. NaN propagates, and every renderer
+        // shows it as "—".
+        st.push(t === "+" ? a + b : t === "-" ? a - b : t === "*" ? a * b : t === "/" ? (b === 0 ? NaN : a / b) : Math.pow(a, b));
       }
     }
     const r = st.pop();
-    return Number.isFinite(r) ? r : 0;
+    // Not finite means undefined — a division by zero, or an equation that did
+    // not reduce to one value. This used to become 0, which looks like data.
+    return Number.isFinite(r) ? r : NaN;
   };
 }
 
@@ -248,11 +254,17 @@ export function diffTables(bufA, bufB, xdf, { limit = 200 } = {}) {
   for (const t of xdf.tables) {
     const a = readTable(bufA, t), b = readTable(bufB, t);
     if (a.error || b.error) continue;
-    let cells = 0, maxDelta = 0, sumDelta = 0;
+    let cells = 0, maxDelta = 0, sumDelta = 0; let undefinedCells = 0;
     const examples = [];
     for (let r = 0; r < a.rows; r++) for (let c = 0; c < a.cols; c++) {
       const va = a.values[r][c], vb = b.values[r][c];
-      if (va === null || vb === null || va === vb) continue;
+      // An undefined cell (NaN from the scaling equation) is neither unchanged
+      // nor a change — counting it would poison the average delta.
+      if (va === null || vb === null || !Number.isFinite(va) || !Number.isFinite(vb)) {
+        if ((va !== null && !Number.isFinite(va)) || (vb !== null && !Number.isFinite(vb))) undefinedCells++;
+        continue;
+      }
+      if (va === vb) continue;
       cells++;
       const d = vb - va;
       sumDelta += d;
@@ -265,7 +277,7 @@ export function diffTables(bufA, bufB, xdf, { limit = 200 } = {}) {
     }
     const rec = {
       id: t.id, title: t.title, categories: t.categories, units: t.z?.units || "",
-      totalCells: a.rows * a.cols, changedCells: cells,
+      totalCells: a.rows * a.cols, changedCells: cells, undefinedCells,
       maxDelta: +maxDelta.toFixed(4),
       avgDelta: cells ? +(sumDelta / cells).toFixed(4) : 0,
       examples, layoutAmbiguous: a.layoutAmbiguous,

@@ -51,8 +51,11 @@ const PATTERNS = {
 
 // Fuel chemistry. Stoichiometric AFR depends on the fuel, so lambda↔AFR
 // conversion is fuel-dependent and must never be hard-coded to gasoline.
+// These convert lambda to AFR for DISPLAY only. They no longer drive any input
+// conversion — see resolveStoichs below for why that mattered.
 export const FUELS = {
-  gasoline: { label: "Gasoline (E10 pump)", stoich: 14.7 },
+  gasoline: { label: "Gasoline (E0)", stoich: 14.7 },
+  e10:      { label: "Pump gas (E10)", stoich: 14.08 },
   e85:      { label: "E85", stoich: 9.765 },
   e50:      { label: "E50 blend", stoich: 11.7 },
   methanol: { label: "Methanol (M100)", stoich: 6.4 },
@@ -346,6 +349,12 @@ export const DEFAULT_FILTERS = {
   minEctUnit: "°F",   // the threshold's OWN unit — converted to the log's unit before comparing
   maxTpsDelta: 2,     // % change between samples — steady state
   maxRpmDelta: 200,   // RPM change between samples
+  // Compare against everything within this window, not just the previous row.
+  // Channels log at their own intervals (TPS every 200 ms here) on a 100 ms
+  // grid, so a throttle ramp is a jump followed by a HELD row — and the held
+  // row has a delta of exactly zero. Comparing one row back let ~9% of
+  // transient rows into the trim statistics on a real log.
+  transientWindowMs: 300,
   minRpm: 500,        // running
   requireClosedLoop: true,
   excludePe: true,
@@ -355,7 +364,18 @@ export function filterRows(parsed, ch, opts = {}, channelUnits = {}) {
   const f = { ...DEFAULT_FILTERS, ...opts };
   const kept = [];
   const warnings = [];
-  const rejected = { cold: 0, openLoop: 0, powerEnrich: 0, transient: 0, notRunning: 0, noTrimData: 0 };
+  // noData: a row carrying nothing at all (the gap between two logging
+  // sessions, or after every channel has expired). It used to fall through to
+  // "no trim data", which blamed the trims for rows that simply had no data.
+  // incompleteTrim: both trim channels exist in this log but only one is live
+  // on this row; summing it as if the other were zero biases the bin.
+  const rejected = { noData: 0, cold: 0, openLoop: 0, powerEnrich: 0, transient: 0,
+                     notRunning: 0, incompleteTrim: 0, noTrimData: 0 };
+  const hasL = ch.ltft !== undefined && (!Array.isArray(ch.ltft) || ch.ltft.length > 0);
+  const hasS = ch.stft !== undefined && (!Array.isArray(ch.stft) || ch.stft.length > 0);
+  const keyRoles = ["rpm", "tps", "mafHz", "ect", "map"].map(r => ch[r]).filter(i => i !== undefined)
+    .concat(hasL ? [].concat(ch.ltft) : [], hasS ? [].concat(ch.stft) : []);
+  const windowSec = (f.transientWindowMs ?? 300) / 1000;
 
   // Convert the threshold into whatever unit the log actually reports, rather
   // than converting every sample. If the log doesn't state a temperature unit
@@ -384,15 +404,22 @@ export function filterRows(parsed, ch, opts = {}, channelUnits = {}) {
     const cmdHeader = parsed.headers[ch.commandedAfr];
     const sample = parsed.rows.slice(0, 400).map(r => num(r, ch.commandedAfr)).filter(v => v !== null);
     const s = detectScale(cmdHeader, sample);
-    if (s.scale === "lambda" || s.scale === "eq" || s.scale === "afr") {
-      const rich = v => (s.scale === "eq" ? v > 1.02 : s.scale === "afr" ? v / 14.7 < 0.98 : v < 0.98);
+    // Commanded AFR is divided by the PCM's stoich, never a hardcoded 14.7:
+    // this PCM uses 14.12, so 14.12/14.7 = 0.9605 read every closed-loop row
+    // as enrichment and the trim analysis kept 1 row of 21,078.
+    const pcm = s.scale === "afr" ? resolveStoichs(parsed, ch, opts).pcm : null;
+    if (s.scale === "afr" && !pcm) {
+      warnings.push(`“${cmdHeader}” is commanded AFR but the PCM's stoichiometric ratio could not be established from this log, so it was not used to detect power enrichment. Set it under the wideband options to enable this.`);
+    } else if (s.scale === "lambda" || s.scale === "eq" || s.scale === "afr") {
+      const rich = v => (s.scale === "eq" ? v > 1.02 : s.scale === "afr" ? v / pcm.value < 0.98 : v < 0.98);
       peProxy = { column: cmdHeader, scale: s.scale, basis: s.basis, test: rich };
       warnings.push(`No power-enrichment or closed-loop flag in this log, so “${cmdHeader}” was used to detect PE instead: any sample commanding richer than stoichiometric is treated as power enrichment (${s.basis}). This is an inference — log Fuel System Status or a PE flag to remove the guesswork.`);
     }
   }
 
   for (let i = 0; i < parsed.rows.length; i++) {
-    const row = parsed.rows[i], prev = parsed.rows[i - 1];
+    const row = parsed.rows[i];
+    if (keyRoles.length && keyRoles.every(k => num(row, k) === null)) { rejected.noData++; continue; }
     if (peProxy) {
       const c = num(row, ch.commandedAfr);
       if (c !== null && peProxy.test(c)) { rejected.powerEnrich++; continue; }
@@ -406,14 +433,25 @@ export function filterRows(parsed, ch, opts = {}, channelUnits = {}) {
     if (f.requireClosedLoop && ch.closedLoop !== undefined && !isOn(row[ch.closedLoop])) { rejected.openLoop++; continue; }
     if (f.excludePe && ch.pe !== undefined && isOn(row[ch.pe])) { rejected.powerEnrich++; continue; }
 
-    if (prev) {
-      const dTps = Math.abs((num(row, ch.tps) ?? 0) - (num(prev, ch.tps) ?? 0));
-      const dRpm = Math.abs((rpm ?? 0) - (num(prev, ch.rpm) ?? 0));
-      if (dTps > f.maxTpsDelta || dRpm > f.maxRpmDelta) { rejected.transient++; continue; }
+    // Look back across the whole window. Null-safe: a missing value is not a
+    // zero, and treating it as one manufactured huge deltas against real data.
+    const tNow = num(row, ch.time);
+    let moved = false;
+    for (let k = i - 1; k >= 0; k--) {
+      const q = parsed.rows[k];
+      const tq = num(q, ch.time);
+      if (tNow !== null && tq !== null) { if (tNow - tq > windowSec) break; }
+      else if (i - k > 1) break;              // no time column: previous row only
+      const a1 = num(row, ch.tps), b1 = num(q, ch.tps);
+      const a2 = rpm, b2 = num(q, ch.rpm);
+      if ((a1 !== null && b1 !== null && Math.abs(a1 - b1) > f.maxTpsDelta) ||
+          (a2 !== null && b2 !== null && Math.abs(a2 - b2) > f.maxRpmDelta)) { moved = true; break; }
     }
+    if (moved) { rejected.transient++; continue; }
 
     const ltft = avgOf(row, ch.ltft), stft = avgOf(row, ch.stft);
     if (ltft === null && stft === null) { rejected.noTrimData++; continue; }
+    if (hasL && hasS && (ltft === null) !== (stft === null)) { rejected.incompleteTrim++; continue; }
 
     kept.push({ row, ltft: ltft ?? 0, stft: stft ?? 0, total: (ltft ?? 0) + (stft ?? 0) });
   }
@@ -526,10 +564,77 @@ export function detectScale(header, sampleValues) {
   return { scale: "ratio-ambiguous", basis: `values near 1.0 (median ${med.toFixed(3)}) — could be lambda or EQ; assuming lambda`, assumedLambda: true };
 }
 
+// ---------- the two stoichs ----------
+// An AFR number is only meaningful alongside the stoichiometric ratio it was
+// produced with, and a log carries AFRs produced with TWO different ones:
+//
+//   wideband AFR   = measured lambda x the CONTROLLER's display stoich.
+//                    Lambda is what the sensor measures; the AFR shown is a
+//                    presentation choice. a CAN wideband controller and most controllers
+//                    default to 14.7 regardless of the fuel in the tank.
+//   commanded AFR  = commanded lambda x the PCM's stoich. This car's PCM uses
+//                    14.12 — derived from 7,024 paired closed-loop samples.
+//
+// Using one number for both is what broke. With only an AFR commanded channel,
+// 14.12 / 14.7 = lambda 0.9605 in closed loop, so every closed-loop row read as
+// power enrichment: trim analysis kept 1 row of 21,078, and the VE grid —
+// silently — computed corrections from closed-loop cruise data.
+//
+// The fuel in the tank affects neither conversion. It is used only to turn a
+// lambda back into an AFR for display.
+export const WIDEBAND_DEFAULT_STOICH = 14.7;
+
+export function resolveStoichs(parsed, ch, opts = {}) {
+  const wb = opts.widebandStoich != null
+    ? { value: +opts.widebandStoich, basis: "set manually" }
+    : { value: WIDEBAND_DEFAULT_STOICH,
+        basis: "controller default (14.7 gasoline display) — set it if your wideband displays another fuel" };
+  if (opts.pcmStoich != null) return { wb, pcm: { value: +opts.pcmStoich, basis: "set manually" } };
+
+  const sample = i => parsed.rows.map(r => num(r, i)).filter(v => v !== null);
+  let lam = null, afr = null;
+  for (const i of (detectCandidates(parsed.headers).commandedAfr || [])) {
+    const s = detectScale(parsed.headers[i], sample(i).slice(0, 400));
+    if (!lam && (s.scale === "lambda" || s.scale === "eq")) lam = { i, scale: s.scale };
+    if (!afr && s.scale === "afr") afr = { i };
+  }
+  if (!afr) return { wb, pcm: null };          // nothing commanded in AFR: nothing to convert
+
+  // Best: the PCM states both, so its stoich is simply AFR / lambda.
+  if (lam) {
+    const ratios = [];
+    for (const r of parsed.rows) {
+      const a = num(r, afr.i), l0 = num(r, lam.i);
+      if (a === null || l0 === null || l0 === 0) continue;
+      const l = lam.scale === "eq" ? 1 / l0 : l0;
+      if (Math.abs(l - 1) <= 0.02) ratios.push(a / l);   // closed-loop pairs only
+    }
+    if (ratios.length >= 20) {
+      ratios.sort((x, y) => x - y);
+      const v = ratios[Math.floor(ratios.length / 2)];
+      return { wb, pcm: { value: +v.toFixed(3),
+        basis: `derived from ${ratios.length} closed-loop samples: commanded AFR / commanded λ` } };
+    }
+  }
+  // Otherwise: closed-loop cruise dominates any normal log, and in closed loop
+  // the PCM commands exactly stoich — so the most common commanded AFR IS the
+  // stoich. Required to be a clear majority, or it is not that plateau.
+  const vals = sample(afr.i);
+  if (vals.length >= 20) {
+    const counts = new Map();
+    for (const v of vals) { const k = v.toFixed(2); counts.set(k, (counts.get(k) || 0) + 1); }
+    const [mode, n] = [...counts.entries()].sort((a, b) => b[1] - a[1])[0];
+    if (n / vals.length >= 0.4)
+      return { wb, pcm: { value: +mode,
+        basis: `inferred: ${(100 * n / vals.length).toFixed(0)}% of commanded AFR sits at ${mode}, the closed-loop plateau` } };
+  }
+  return { wb, pcm: null };                    // refuse rather than assume 14.7
+}
+
 /** Everything is compared in lambda: 1.0 = stoich, <1 rich, >1 lean. */
 export function toLambda(value, scale, stoich) {
   if (value == null || !Number.isFinite(value)) return null;
-  if (scale === "afr") return value / stoich;
+  if (scale === "afr") return stoich ? value / stoich : null;   // unknown stoich: refuse
   if (scale === "eq") return value === 0 ? null : 1 / value;
   return value;                       // lambda, or ratio assumed to be lambda
 }
@@ -538,7 +643,8 @@ export function analyzeWideband(parsed, ch, channelUnits, opts = {}) {
   const wbIdx = ch.widebandAfr, cmdIdx = ch.commandedAfr;
   if (wbIdx === undefined) return { present: false, reason: "no wideband channel found in this log" };
 
-  const fuel = FUELS[opts.fuel] || FUELS.gasoline;
+  const fuel = FUELS[opts.fuel] || FUELS.gasoline;      // display only
+  const stoichs = resolveStoichs(parsed, ch, opts);
   const col = i => parsed.rows.map(r => num(r, i)).filter(v => v !== null);
   const wbScale = opts.widebandScale
     ? { scale: opts.widebandScale, basis: "set manually" }
@@ -547,7 +653,14 @@ export function analyzeWideband(parsed, ch, channelUnits, opts = {}) {
     ? { scale: opts.commandedScale, basis: "set manually" }
     : detectScale(parsed.headers[cmdIdx], col(cmdIdx).slice(0, 400)));
 
-  const leanLimit = opts.wotLeanLambda ?? 1.0;     // λ at high load that warrants attention
+  // Two lean tests, because one was not enough. The absolute limit only catches
+  // "leaner than stoichiometric at WOT", which is already catastrophic: a bin
+  // commanding 0.85 and getting 0.95 — 11.8% leaner than asked, and enough to
+  // hurt an engine — passed it, and the UI showed a green checkmark. Lean OF
+  // TARGET is what matters, so that is the primary test; the absolute limit
+  // stays as a backstop for when no commanded channel was logged.
+  const leanLimit = opts.wotLeanLambda ?? 1.0;      // absolute backstop, λ
+  const leanMargin = opts.wotLeanMarginPct ?? 3;    // % leaner than commanded
   const wotTps = opts.wotTps ?? 80;                 // % throttle counted as WOT
 
   const wotByRpm = new Map();
@@ -557,9 +670,9 @@ export function analyzeWideband(parsed, ch, channelUnits, opts = {}) {
     && (cmdScale.scale === "lambda" || cmdScale.scale === "eq" || cmdScale.scale === "afr");
 
   for (const row of parsed.rows) {
-    const wb = toLambda(num(row, wbIdx), wbScale.scale, fuel.stoich);
+    const wb = toLambda(num(row, wbIdx), wbScale.scale, stoichs.wb.value);
     if (wb === null) continue;
-    const cmd = cmdIdx === undefined ? null : toLambda(num(row, cmdIdx), cmdScale.scale, fuel.stoich);
+    const cmd = cmdIdx === undefined ? null : toLambda(num(row, cmdIdx), cmdScale.scale, stoichs.pcm?.value);
     const tps = num(row, ch.tps);
     const rpm = num(row, ch.rpm);
     const pe = ch.pe !== undefined && isOn(row[ch.pe]);
@@ -568,34 +681,49 @@ export function analyzeWideband(parsed, ch, channelUnits, opts = {}) {
     // to the narrowband. Reported as an inference, never assumed silently.
     const cl = ch.closedLoop !== undefined ? isOn(row[ch.closedLoop])
       : (clProxy && cmd !== null ? Math.abs(cmd - 1) <= 0.01 : null);
-    const atWot = pe || (tps !== null && tps >= wotTps);
+    // Power enrichment is the region that matters, whatever the throttle says.
+    // Requiring TPS >= 80% or a PE flag found ZERO qualifying samples on a real
+    // log with no PE channel and a 72.9% throttle peak — while 9 cells ran more
+    // than 3% lean of commanded, up to +8.8%. Commanding richer than stoich IS
+    // enrichment; used only when there is no real PE flag, and disclosed.
+    const enrichCommanded = ch.pe === undefined && cmd !== null && cmd < 0.98;
+    const atWot = pe || (tps !== null && tps >= wotTps) || enrichCommanded;
 
     if (atWot && rpm !== null) {
       // This is the region trims can't see and where lean actually hurts.
       const key = Math.floor(rpm / 500) * 500;
-      if (!wotByRpm.has(key)) wotByRpm.set(key, { from: key, to: key + 500, n: 0, sumWb: 0, sumCmd: 0, nCmd: 0, leanest: null });
+      if (!wotByRpm.has(key)) wotByRpm.set(key, { from: key, to: key + 500, n: 0, sumWb: 0,
+                                                   pairN: 0, pairWb: 0, pairCmd: 0, leanest: null });
       const b = wotByRpm.get(key);
       b.n++; b.sumWb += wb;
-      if (cmd !== null) { b.sumCmd += cmd; b.nCmd++; }
+      // The error must come from PAIRED samples. Averaging every wideband row
+      // against only the rows that also carried commanded compared two
+      // different populations, and inflated an on-target bin to 14.7% lean.
+      if (cmd !== null) { b.pairN++; b.pairWb += wb; b.pairCmd += cmd; }
       if (b.leanest === null || wb > b.leanest) b.leanest = wb;
       wotSamples++;
-      if (wb > leanLimit) leanWotSamples++;
+      if (wb > leanLimit || (cmd !== null && wb > cmd * (1 + leanMargin / 100))) leanWotSamples++;
       if (!worstWot || wb > worstWot.lambda) worstWot = { lambda: +wb.toFixed(3), rpm, tps, commanded: cmd === null ? null : +cmd.toFixed(3) };
     }
     if (cl === true && !pe && cmd !== null) clPairs.push({ wb, cmd });
   }
 
   const asAfr = l => +(l * fuel.stoich).toFixed(2);
-  const wot = [...wotByRpm.values()].sort((a, b) => a.from - b.from).map(b => ({
-    from: b.from, to: b.to, n: b.n,
-    avgLambda: +(b.sumWb / b.n).toFixed(3),
-    avgAfr: asAfr(b.sumWb / b.n),
-    commandedLambda: b.nCmd ? +(b.sumCmd / b.nCmd).toFixed(3) : null,
-    commandedAfr: b.nCmd ? asAfr(b.sumCmd / b.nCmd) : null,
-    errorPct: b.nCmd ? +(((b.sumWb / b.n) / (b.sumCmd / b.nCmd) - 1) * 100).toFixed(1) : null,
-    leanestLambda: +b.leanest.toFixed(3),
-    lean: (b.sumWb / b.n) > leanLimit,
-  }));
+  const wot = [...wotByRpm.values()].sort((a, b) => a.from - b.from).map(b => {
+    const errorPct = b.pairN ? +((b.pairWb / b.pairCmd - 1) * 100).toFixed(1) : null;
+    const avg = b.sumWb / b.n;
+    return {
+      from: b.from, to: b.to, n: b.n, pairedSamples: b.pairN,
+      avgLambda: +avg.toFixed(3),
+      avgAfr: asAfr(avg),
+      commandedLambda: b.pairN ? +(b.pairCmd / b.pairN).toFixed(3) : null,
+      commandedAfr: b.pairN ? asAfr(b.pairCmd / b.pairN) : null,
+      errorPct,
+      leanestLambda: +b.leanest.toFixed(3),
+      leanOfTarget: errorPct !== null && errorPct > leanMargin,
+      lean: avg > leanLimit || (errorPct !== null && errorPct > leanMargin),
+    };
+  });
 
   // Closed-loop cross-check: the narrowband can be happy while the wideband isn't.
   let closedLoopCheck = null;
@@ -616,7 +744,11 @@ export function analyzeWideband(parsed, ch, channelUnits, opts = {}) {
     commandedChannel: cmdIdx === undefined ? null : parsed.headers[cmdIdx],
     scale: wbScale, commandedScale: cmdScale,
     fuel: { key: opts.fuel || "gasoline", ...fuel },
-    wotDefinition: { pePreferred: ch.pe !== undefined, tpsThresholdPct: wotTps, leanLimitLambda: leanLimit },
+    stoichs,
+    wotDefinition: { pePreferred: ch.pe !== undefined, tpsThresholdPct: wotTps,
+                     leanLimitLambda: leanLimit, leanMarginPct: leanMargin,
+                     enrichmentProxy: ch.pe === undefined && cmdIdx !== undefined
+                       ? "commanded mixture richer than λ 0.98 — no PE channel was logged" : null },
     wotSamples, leanWotSamples,
     worstWot,
     wot,
@@ -653,11 +785,19 @@ export function analyzeSpark(parsed, ch, channelUnits, opts = {}) {
   const krCells = new Map(), sparkCells = new Map();
   const events = [];
   let cur = null, krSamples = 0, worst = null, running = 0;
+  // GM knock retard is applied instantly and then DECAYS back toward zero.
+  // Only a rise is knock; an equal value is a held sample and a falling one is
+  // recovery. Attributing every non-zero value smeared one real event across
+  // every cell the engine passed through while retard recovered: on a real log,
+  // knock in 2 cells was reported in 6, and the grid would have pulled timing
+  // from four cells that never knocked.
+  let prevKr = 0;
+  const RISE = 0.04;   // GM retard moves in ~0.088° steps; anything above noise
 
   for (let i = 0; i < parsed.rows.length; i++) {
     const row = parsed.rows[i];
     const rpm = num(row, ch.rpm);
-    if (rpm !== null && rpm < 500) { if (cur) { events.push(cur); cur = null; } continue; }
+    if (rpm !== null && rpm < 500) { if (cur) { events.push(cur); cur = null; } prevKr = 0; continue; }
     running++;
     let y = yRole ? num(row, ch[yRole]) : null;
     if (y !== null && yScale) y = yScale(y);
@@ -669,10 +809,12 @@ export function analyzeSpark(parsed, ch, channelUnits, opts = {}) {
       const key = `${Math.floor(rpm / rpmBin) * rpmBin}|${Math.floor(y / loadBin) * loadBin}`;
       if (kr !== null) {
         const c = krCells.get(key) || { x: Math.floor(rpm / rpmBin) * rpmBin, y: Math.floor(y / loadBin) * loadBin, n: 0, max: 0, hits: 0, iatSum: 0, iatN: 0 };
-        c.n++; if (kr > c.max) c.max = kr;
-        if (kr >= krThreshold) {
+        c.n++;
+        // Credit the cell only where retard ROSE above its previous value.
+        if (kr >= krThreshold && kr > prevKr + RISE) {
+          if (kr > c.max) c.max = kr;
           c.hits++;
-          if (iat !== null) { c.iatSum += iat; c.iatN++; }   // only IAT while knocking
+          if (iat !== null) { c.iatSum += iat; c.iatN++; }   // IAT at the moment of knock
         }
         krCells.set(key, c);
       }
@@ -692,6 +834,7 @@ export function analyzeSpark(parsed, ch, channelUnits, opts = {}) {
       if (rpm !== null) { cur.rpmMin = Math.min(cur.rpmMin ?? rpm, rpm); cur.rpmMax = Math.max(cur.rpmMax ?? rpm, rpm); }
       if (!worst || kr > worst.kr) worst = { kr: +kr.toFixed(2), rpm, load: y, iat, spark: adv, tps };
     } else if (cur) { events.push(cur); cur = null; }
+    if (kr !== null) prevKr = kr;
   }
   if (cur) events.push(cur);
 
@@ -823,6 +966,9 @@ export function analyze(text, opts = {}) {
     missingChannels: missing,
     format: raw.format,
     resampled: parsed.resampled || null,
+    // Shown, not buried: a wrong stoich silently rescales every lambda.
+    pcmStoich: resolveStoichs(parsed, ch, opts).pcm,
+    widebandStoich: resolveStoichs(parsed, ch, opts).wb,
     silentChannels,
     emptyChannels: parsed.headers
       .map((h, i) => (parsed.rows.some(r => typeof r[i] === "number") ? null : h))
@@ -956,8 +1102,12 @@ export function analyzeVE(parsed, ch, channelUnits, opts = {}) {
   const yScale = loadToKpa(channelUnits, "map");
   if (!yScale) return { present: false, reason: "manifold pressure has no unit, so it cannot be binned in kPa" };
 
-  const fuel = FUELS[opts.fuel || "gasoline"] || FUELS.gasoline;
+  const fuel = FUELS[opts.fuel || "gasoline"] || FUELS.gasoline;   // display only
+  const stoichs = resolveStoichs(parsed, ch, opts);
   const wbScale = wb.scale.scale, cmdScale = wb.commandedScale?.scale;
+  if (cmdScale === "afr" && !stoichs.pcm)
+    return { present: false,
+             reason: "commanded mixture is in AFR and the PCM's stoichiometric ratio could not be established from this log, so commanded lambda — and therefore open loop — cannot be determined without guessing" };
   const wbIdx = ch.widebandAfr, cmdIdx = ch.commandedAfr;
 
   const rpmBin = opts.veRpmBin || 500, loadBin = opts.veLoadBin || 10;
@@ -967,8 +1117,8 @@ export function analyzeVE(parsed, ch, channelUnits, opts = {}) {
 
   for (const row of parsed.rows) {
     const rpm = num(row, ch.rpm), rawMap = num(row, ch.map);
-    const meas = toLambda(num(row, wbIdx), wbScale, fuel.stoich);
-    const cmd = toLambda(num(row, cmdIdx), cmdScale, fuel.stoich);
+    const meas = toLambda(num(row, wbIdx), wbScale, stoichs.wb.value);
+    const cmd = toLambda(num(row, cmdIdx), cmdScale, stoichs.pcm?.value);
     if (rpm === null || rawMap === null || meas === null || cmd === null || rpm < 500) continue;
 
     // Open loop = the PCM is not trimming to the narrowband. A commanded

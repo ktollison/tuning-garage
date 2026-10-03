@@ -21,7 +21,7 @@ import { detectUnit, convert, DEFAULT_PREFERENCES, QUANTITIES } from "./modules/
 import * as scanner from "./modules/vcmscanner.mjs";
 
 const execFileP = promisify(execFile);
-const APP_VERSION = "0.39.1"; // keep in step with CHANGELOG.md — CI enforces the match
+const APP_VERSION = "0.40.0"; // keep in step with CHANGELOG.md — CI enforces the match
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(process.env.TUNING_REPO || path.join(__dirname, ".."));
 const PUBLIC = path.join(__dirname, "public");
@@ -1136,7 +1136,8 @@ async function handleApi(req, res, url) {
     const prefsNow = await readPrefs();
     opts.fuel = q.get("fuel") || prefsNow.fuel || "gasoline";
     for (const k of ["widebandScale", "commandedScale"]) if (q.get(k)) opts[k] = q.get(k);
-    for (const k of ["wotTps", "wotLeanLambda"]) if (q.get(k)) opts[k] = Number(q.get(k));
+    for (const k of ["wotTps", "wotLeanLambda", "wotLeanMarginPct", "widebandStoich", "pcmStoich"])
+      if (q.get(k)) opts[k] = Number(q.get(k));
     return send(200, { ok: true, file: path.relative(REPO, p), preferences: await readPrefs(), ...analyzeLog(text, opts) });
   }
 

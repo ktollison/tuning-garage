@@ -1593,10 +1593,10 @@ function widebandHtml(wb) {
       ${wb.commandedChannel ? `compared against ${esc(wb.commandedChannel)}` : `<b style="color:var(--warn)">no commanded-AFR channel — measured values only, no error figure</b>`}</div>
 
     ${danger ? `<div class="card" style="border-color:#d03b3b;margin:10px 0">
-      <b style="color:#d03b3b">⚠ ${wb.leanWotSamples} of ${wb.wotSamples} wide-open-throttle samples ran leaner than λ ${wb.wotDefinition.leanLimitLambda}.</b>
+      <b style="color:#d03b3b">⚠ ${wb.leanWotSamples} of ${wb.wotSamples} power-enrichment or wide-open-throttle samples ran more than ${wb.wotDefinition.leanMarginPct}% leaner than commanded, or leaner than λ ${wb.wotDefinition.leanLimitLambda}.</b>
       <div class="note" style="margin-top:4px">Leanest point: <b>λ ${wb.worstWot.lambda}</b> (${(wb.worstWot.lambda * wb.fuel.stoich).toFixed(1)} AFR) at ${wb.worstWot.rpm} RPM${wb.worstWot.commanded ? `, where λ ${wb.worstWot.commanded} was commanded` : ""}.
       Lean at high load is how engines get hurt — treat this as a stop-and-investigate, not a tuning nicety. Check fuel supply and injector sizing before adding timing.</div>
-    </div>` : (wb.wotSamples ? `<div class="note">✅ No WOT samples leaner than λ ${wb.wotDefinition.leanLimitLambda} across ${wb.wotSamples} samples.</div>` : `<div class="note">No wide-open-throttle samples in this log (WOT = power enrichment active, or throttle ≥ ${wb.wotDefinition.tpsThresholdPct}%).</div>`)}
+    </div>` : (wb.wotSamples ? `<div class="note">✅ No WOT samples more than ${wb.wotDefinition.leanMarginPct}% leaner than commanded, or leaner than λ ${wb.wotDefinition.leanLimitLambda}, across ${wb.wotSamples} samples.</div>` : `<div class="note">No power-enrichment or wide-open-throttle samples in this log (PE active${wb.wotDefinition.enrichmentProxy ? ", commanded richer than λ 0.98" : ""}, or throttle ≥ ${wb.wotDefinition.tpsThresholdPct}%).</div>`)}
 
     ${wb.wot.length ? `
       <h3>Wide-open throttle by RPM</h3>
@@ -1625,7 +1625,9 @@ function widebandHtml(wb) {
       <div><label>Wideband scale</label><select id="wbScale">${["", "afr", "lambda", "eq"].map(s =>
         `<option value="${s}" ${wb.scale.scale === s ? "selected" : ""}>${s === "" ? "auto-detect" : s}</option>`).join("")}</select></div>
       <div><label>WOT throttle (%)</label><input id="wbTps" type="number" value="${wb.wotDefinition.tpsThresholdPct}"></div>
-      <div><label>Lean limit (λ)</label><input id="wbLean" type="number" step="0.01" value="${wb.wotDefinition.leanLimitLambda}"></div>
+      <div><label>Lean of commanded (%)</label><input id="wbMargin" type="number" step="0.5" value="${wb.wotDefinition.leanMarginPct}"></div>
+      <div><label>Absolute lean limit (λ)</label><input id="wbLean" type="number" step="0.01" value="${wb.wotDefinition.leanLimitLambda}"></div>
+      <div><label>Wideband displays AFR at</label><input id="wbStoich" type="number" step="0.01" value="${wb.stoichs?.wb?.value ?? 14.7}"></div>
     </div>
     <div class="actions"><button class="btn" onclick="rerunWideband()">Re-run wideband</button></div>
     <div class="note">${esc(wb.note)}</div>`;
@@ -1669,6 +1671,8 @@ async function rerunWideband() {
     widebandScale: $("#wbScale").value,
     wotTps: $("#wbTps").value,
     wotLeanLambda: $("#wbLean").value,
+    wotLeanMarginPct: $("#wbMargin").value,
+    widebandStoich: $("#wbStoich").value,
   });
 }
 
