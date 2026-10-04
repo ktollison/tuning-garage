@@ -1371,9 +1371,10 @@ async function logAnalysis(rel, filters) {
     </div>
     <table style="margin-bottom:10px"><tr><th>Filtered out</th><th>Rows</th></tr>
       ${Object.entries(rej).filter(([, n]) => n).map(([k, n]) =>
-        `<tr><td>${esc({cold:"Not warmed up",openLoop:"Open loop",powerEnrich:"Power enrichment",transient:"Transient (throttle/RPM moving)",notRunning:"Engine not running",noTrimData:"No trim data in row"}[k] || k)}</td><td class="num">${n.toLocaleString()}</td></tr>`).join("")}
+        `<tr><td>${esc({noData:"No data in row (between sessions)",cold:"Not warmed up",openLoop:"Open loop",loopUnknown:"Loop state unknown (no status reading)",powerEnrich:"Power enrichment",transient:"Transient (throttle/RPM moving)",notRunning:"Engine not running",incompleteTrim:"Only one trim channel live",noTrimData:"No trim data in row"}[k] || k)}</td><td class="num">${n.toLocaleString()}</td></tr>`).join("")}
     </table>
 
+    ${loopCheckHtml(r.loopCheck)}
     ${r.missingChannels.length ? `<div class="note" style="color:var(--warn)">⚠ Channels not found in this log: ${r.missingChannels.map(esc).join(", ")} — filtering is weaker without them, so treat the result with more suspicion.</div>` : ""}
     ${(r.warnings || []).map(w => `<div class="note" style="color:var(--warn)">⚠ ${esc(w)}</div>`).join("")}
 
@@ -1556,6 +1557,18 @@ function airModelsHtml(a) {
     <div class="note">${esc(a.note)}</div>`;
 }
 
+// Closed/open loop comes from Fuel System Status when it is logged; the old
+// commanded-λ inference is shown beside it so a bad status channel is visible.
+function loopCheckHtml(c) {
+  if (!c || !c.rows) return "";
+  return `<div class="note" style="margin-bottom:6px${c.suspect ? ";color:var(--warn)" : ""}">
+    ${c.suspect ? "⚠ " : ""}<b>Loop state from ${esc(c.channel)}.</b>
+    Cross-check against commanded mixture: agrees on ${c.agreementPct}% of ${c.rows.toLocaleString()} rows
+    (${c.statusOpenInferredClosed.toLocaleString()} open loop at stoichiometric, ${c.statusClosedInferredOpen.toLocaleString()} closed loop off stoichiometric; warning above ${c.limitPct}%).
+    ${c.notReadyRich ? `${c.notReadyRich.toLocaleString()} rich “not ready” rows — warm-up while cold — would have been read as power enrichment without this channel.` : ""}
+  </div>`;
+}
+
 // VE is tuned open loop on the wideband. When there is no open-loop data the
 // honest answer is a refusal with the reason, not a grid of zeroes.
 function veHtml(v) {
@@ -1565,7 +1578,7 @@ function veHtml(v) {
     <div class="note"><b>Not computed</b> — ${esc(v.reason)}.${v.why ? ` ${esc(v.why)}` : ""}</div>`;
   return `
     <h3 style="margin-top:18px">VE correction — open loop only</h3>
-    <div class="note">${v.openLoopSamples} open-loop samples, ${v.closedLoopSkipped} closed-loop rows skipped ·
+    <div class="note">${v.openLoopSamples} open-loop samples, ${v.closedLoopSkipped} closed-loop rows skipped${v.warmupSkipped ? `, ${v.warmupSkipped} warm-up` : ""}${v.decelSkipped ? `, ${v.decelSkipped} decel fuel cut` : ""}${v.faultSkipped ? `, ${v.faultSkipped} fuel-system fault` : ""} ·
       open loop identified by ${esc(v.openLoopBasis)}</div>
     <table><tr><th>RPM</th><th>Load (kPa)</th><th>Samples</th><th>Measured λ</th><th>Commanded λ</th><th>Multiply VE by</th><th>Change</th></tr>
     ${v.cells.sort((p, q) => p.x - q.x || q.y - p.y).map(c => `<tr${c.enoughData ? "" : ' style="opacity:.45"'}>
@@ -1593,6 +1606,7 @@ function widebandHtml(wb) {
       ${wb.commandedChannel ? `compared against ${esc(wb.commandedChannel)}` : `<b style="color:var(--warn)">no commanded-AFR channel — measured values only, no error figure</b>`}</div>
     <div class="note">Wideband read at <b>${wb.stoichs?.wb?.value ?? "—"}</b> AFR = λ 1.00 (${esc(wb.stoichs?.wb?.basis || "")})
       · PCM stoich <b>${wb.stoichs?.pcm ? wb.stoichs.pcm.value : "—"}</b>${wb.stoichs?.pcm ? ` (${esc(wb.stoichs.pcm.basis)})` : " (not needed — commanded is logged in λ)"}</div>
+    ${wb.wotDefinition.warmupExcluded ? `<div class="note">${wb.wotDefinition.warmupExcluded} rich warm-up samples (Fuel System Status “not ready” with the engine cold) were left out of the power-enrichment check.</div>` : ""}
 
     ${danger ? `<div class="card" style="border-color:#d03b3b;margin:10px 0">
       <b style="color:#d03b3b">⚠ ${wb.leanWotSamples} of ${wb.wotSamples} power-enrichment or wide-open-throttle samples ran more than ${wb.wotDefinition.leanMarginPct}% leaner than commanded, or leaner than λ ${wb.wotDefinition.leanLimitLambda}.</b>

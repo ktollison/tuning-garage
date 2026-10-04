@@ -340,6 +340,112 @@ function isOn(v) {
   return false;
 }
 
+// ---------- loop state ----------
+// SAE PID 03, Fuel System Status. HP Tuners writes it as TEXT — "CL - Normal",
+// "OL - Not Ready", "OL - Accel/Decel" — and isOn() reads every one of those
+// as false, so a live status channel would have rejected the entire log as
+// open loop. It survived only because the text also failed the "has data"
+// test and was dropped as empty, leaving closed loop and PE to be guessed from
+// commanded λ — and the guess counted cold warm-up as power enrichment.
+//
+// Reasons: normal; notReady (closed-loop conditions not met — warm-up, OR
+// closed loop disabled in the tune for VE work, so coolant temperature decides
+// which); accelDecel (PE, accel enrichment or DFCO — told apart by commanded
+// λ); fault; other (a plain closed-loop flag that says nothing about why).
+const SAE_FUEL_STATUS = { 1: [false, "notReady"], 2: [true, "normal"], 4: [false, "accelDecel"],
+                          8: [false, "fault"], 16: [true, "fault"] };
+
+function readStatusText(s) {
+  const t = s.trim();
+  const reason = /not\s*ready|cold|warm/i.test(t) ? "notReady" : /accel|decel|\bpe\b|enrich/i.test(t) ? "accelDecel"
+    : /fault/i.test(t) ? "fault" : /normal/i.test(t) ? "normal" : "other";
+  if (/^cl\b|closed/i.test(t)) return { closed: true, reason };
+  if (/^ol\b|open/i.test(t)) return { closed: false, reason };
+  if (/^(1|true|yes|on|active|enabled)$/i.test(t)) return { closed: true, reason: "other" };
+  if (/^(0|false|no|off|inactive|disabled)$/i.test(t)) return { closed: false, reason: "other" };
+  return null;
+}
+
+// Returns row → { closed, reason } | null, or null when there is no channel.
+// Numeric values are SAE bit codes only when the channel is Fuel System Status
+// AND carries a code a 0/1 flag cannot (2, 4, 8, 16) — otherwise a plain
+// "Closed Loop" 1 would read as "OL - Not Ready".
+export function makeLoopReader(parsed, ch) {
+  const idx = ch.closedLoop;
+  if (idx === undefined) return null;
+  const nums = new Set();
+  for (const r of parsed.rows) if (typeof r[idx] === "number") nums.add(r[idx]);
+  const sae = /fuel\s*sys/i.test(parsed.headers[idx] || "")
+    && [...nums].some(v => v in SAE_FUEL_STATUS && v !== 1)
+    && [...nums].every(v => v in SAE_FUEL_STATUS);
+  return row => {
+    const v = row[idx];
+    if (typeof v === "string") return v.trim() ? readStatusText(v) : null;
+    if (typeof v !== "number") return null;
+    if (sae) { const s = SAE_FUEL_STATUS[v]; return s ? { closed: s[0], reason: s[1] } : null; }
+    return { closed: v !== 0, reason: "other" };
+  };
+}
+
+// Trims are only trustworthy in closed loop with working feedback.
+const trimsValid = s => !!s && s.closed && s.reason !== "fault";
+
+// "Not ready" is warm-up only while the engine is cold. Warm, it is closed
+// loop switched off on purpose, and those rows are exactly the ones VE tuning
+// needs. No usable coolant reading → treated as warm-up, the cautious reading.
+function makeWarmupTest(parsed, ch, channelUnits, opts = {}) {
+  const f = { ...DEFAULT_FILTERS, ...(opts.filters || {}) };
+  const req = requireUnit(channelUnits, "ect", "temperature", f.minEctUnit, "coolant temperature");
+  const threshold = req.ok ? convert(f.minEct, f.minEctUnit, req.unit) : null;
+  return (status, row) => {
+    if (status?.reason !== "notReady") return false;
+    const ect = num(row, ch.ect);
+    return threshold === null || ect === null || ect < threshold;
+  };
+}
+
+// The inference the app used before it could read the status channel, kept as
+// a cross-check: a status channel that is misconfigured, mislabelled or badly
+// lagging shows up as disagreement with what the PCM was commanding.
+export function crossCheckLoop(parsed, ch, opts = {}) {
+  const loop = makeLoopReader(parsed, ch);
+  if (!loop || ch.commandedAfr === undefined) return null;
+  const header = parsed.headers[ch.commandedAfr];
+  const sample = parsed.rows.map(r => num(r, ch.commandedAfr)).filter(v => v !== null).slice(0, 400);
+  const scale = opts.commandedScale ? { scale: opts.commandedScale } : detectScale(header, sample);
+  const pcm = scale.scale === "afr" ? resolveStoichs(parsed, ch, opts).pcm : null;
+  if (!["lambda", "eq", "afr"].includes(scale.scale) || (scale.scale === "afr" && !pcm)) return null;
+
+  let rows = 0, agree = 0, statusClosedInferredOpen = 0, statusOpenInferredClosed = 0,
+      notReadyRich = 0, unreadable = 0;
+  const unreadableValues = new Set();
+  for (const row of parsed.rows) {
+    const raw = row[ch.closedLoop];
+    if (raw === null || raw === undefined || raw === "") continue;
+    const s = loop(row);
+    if (!s) { unreadable++; if (unreadableValues.size < 5) unreadableValues.add(String(raw)); continue; }
+    const cmd = toLambda(num(row, ch.commandedAfr), scale.scale, pcm?.value);
+    if (cmd === null) continue;
+    rows++;
+    const inferredClosed = Math.abs(cmd - 1) <= 0.01;
+    if (inferredClosed === s.closed) agree++;
+    else if (s.closed) statusClosedInferredOpen++;
+    else statusOpenInferredClosed++;
+    if (s.reason === "notReady" && cmd < 0.98) notReadyRich++;
+  }
+  if (!rows && !unreadable) return null;
+  const disagreePct = rows ? +((1 - agree / rows) * 100).toFixed(1) : null;
+  const limit = opts.loopDisagreePct ?? 5;
+  return {
+    channel: parsed.headers[ch.closedLoop], commandedChannel: header,
+    rows, agree, agreementPct: rows ? +(agree / rows * 100).toFixed(1) : null,
+    disagreePct, limitPct: limit, suspect: disagreePct !== null && disagreePct > limit,
+    statusClosedInferredOpen, statusOpenInferredClosed, notReadyRich,
+    unreadable, unreadableValues: [...unreadableValues],
+    basis: "inferred closed loop = commanded within 1% of stoichiometric",
+  };
+}
+
 // ---------- filtering ----------
 // Trim data is only meaningful warmed up, in closed loop, out of power
 // enrichment, at steady state. Everything else is noise that will happily
@@ -369,13 +475,16 @@ export function filterRows(parsed, ch, opts = {}, channelUnits = {}) {
   // "no trim data", which blamed the trims for rows that simply had no data.
   // incompleteTrim: both trim channels exist in this log but only one is live
   // on this row; summing it as if the other were zero biases the bin.
-  const rejected = { noData: 0, cold: 0, openLoop: 0, powerEnrich: 0, transient: 0,
+  // loopUnknown: the status channel is logged but has no reading on this row
+  // (expired, or a value that is not a fuel system state) — not "open loop".
+  const rejected = { noData: 0, cold: 0, openLoop: 0, loopUnknown: 0, powerEnrich: 0, transient: 0,
                      notRunning: 0, incompleteTrim: 0, noTrimData: 0 };
   const hasL = ch.ltft !== undefined && (!Array.isArray(ch.ltft) || ch.ltft.length > 0);
   const hasS = ch.stft !== undefined && (!Array.isArray(ch.stft) || ch.stft.length > 0);
   const keyRoles = ["rpm", "tps", "mafHz", "ect", "map"].map(r => ch[r]).filter(i => i !== undefined)
     .concat(hasL ? [].concat(ch.ltft) : [], hasS ? [].concat(ch.stft) : []);
   const windowSec = (f.transientWindowMs ?? 300) / 1000;
+  const loop = makeLoopReader(parsed, ch);
 
   // Convert the threshold into whatever unit the log actually reports, rather
   // than converting every sample. If the log doesn't state a temperature unit
@@ -430,7 +539,11 @@ export function filterRows(parsed, ch, opts = {}, channelUnits = {}) {
     const ect = num(row, ch.ect);
     if (ectThreshold && ect !== null && ect < ectThreshold.value) { rejected.cold++; continue; }
 
-    if (f.requireClosedLoop && ch.closedLoop !== undefined && !isOn(row[ch.closedLoop])) { rejected.openLoop++; continue; }
+    if (f.requireClosedLoop && loop) {
+      const s = loop(row);
+      if (!s) { rejected.loopUnknown++; continue; }
+      if (!trimsValid(s)) { rejected.openLoop++; continue; }
+    }
     if (f.excludePe && ch.pe !== undefined && isOn(row[ch.pe])) { rejected.powerEnrich++; continue; }
 
     // Look back across the whole window. Null-safe: a missing value is not a
@@ -666,6 +779,9 @@ export function analyzeWideband(parsed, ch, channelUnits, opts = {}) {
   const wotByRpm = new Map();
   let wotSamples = 0, leanWotSamples = 0, worstWot = null;
   const clPairs = [];
+  const loop = makeLoopReader(parsed, ch);
+  const isWarmup = makeWarmupTest(parsed, ch, channelUnits, opts);
+  let warmupExcluded = 0;
   const clProxy = ch.closedLoop === undefined && cmdIdx !== undefined
     && (cmdScale.scale === "lambda" || cmdScale.scale === "eq" || cmdScale.scale === "afr");
 
@@ -676,17 +792,25 @@ export function analyzeWideband(parsed, ch, channelUnits, opts = {}) {
     const tps = num(row, ch.tps);
     const rpm = num(row, ch.rpm);
     const pe = ch.pe !== undefined && isOn(row[ch.pe]);
+    const status = loop ? loop(row) : null;
     // With no Fuel System Status channel, commanding stoichiometric IS the
     // closed-loop condition — the PCM only targets λ 1.00 when it is trimming
     // to the narrowband. Reported as an inference, never assumed silently.
-    const cl = ch.closedLoop !== undefined ? isOn(row[ch.closedLoop])
+    const cl = loop ? (status ? trimsValid(status) : null)
       : (clProxy && cmd !== null ? Math.abs(cmd - 1) <= 0.01 : null);
     // Power enrichment is the region that matters, whatever the throttle says.
     // Requiring TPS >= 80% or a PE flag found ZERO qualifying samples on a real
     // log with no PE channel and a 72.9% throttle peak — while 9 cells ran more
     // than 3% lean of commanded, up to +8.8%. Commanding richer than stoich IS
     // enrichment; used only when there is no real PE flag, and disclosed.
-    const enrichCommanded = ch.pe === undefined && cmd !== null && cmd < 0.98;
+    // Fuel System Status narrows it: rich while closed loop is a transition
+    // artefact, and rich in "OL - Not Ready" is warm-up enrichment — 549 rows
+    // of one real log were cold start, judged as if they were a WOT pull.
+    let enrichCommanded = ch.pe === undefined && cmd !== null && cmd < 0.98;
+    if (enrichCommanded && status && (status.closed || isWarmup(status, row))) {
+      enrichCommanded = false;
+      if (!status.closed) warmupExcluded++;
+    }
     const atWot = pe || (tps !== null && tps >= wotTps) || enrichCommanded;
 
     if (atWot && rpm !== null) {
@@ -748,7 +872,9 @@ export function analyzeWideband(parsed, ch, channelUnits, opts = {}) {
     wotDefinition: { pePreferred: ch.pe !== undefined, tpsThresholdPct: wotTps,
                      leanLimitLambda: leanLimit, leanMarginPct: leanMargin,
                      enrichmentProxy: ch.pe === undefined && cmdIdx !== undefined
-                       ? "commanded mixture richer than λ 0.98 — no PE channel was logged" : null },
+                       ? (loop ? "commanded mixture richer than λ 0.98 while Fuel System Status reports open loop, excluding warm-up — no PE channel was logged"
+                               : "commanded mixture richer than λ 0.98 — no PE channel was logged") : null,
+                     warmupExcluded },
     wotSamples, leanWotSamples,
     worstWot,
     wot,
@@ -915,15 +1041,19 @@ export function analyze(text, opts = {}) {
   const chAll = { ...detectChannels(parsed.headers), ...(opts.channels || {}) };
 
   // A channel can be present in the header and carry no data at all — the
-  // wideband was configured but never reported, and so was Fuel System Status.
-  // Left in place, an empty closed-loop flag reads as "not in closed loop" on
-  // every row and silently rejects the entire log. Drop them and say so.
-  const hasData = i => i !== undefined && parsed.rows.some(r => typeof r[i] === "number");
+  // wideband was configured but never reported. Left in place, an empty
+  // closed-loop flag reads as "not in closed loop" on every row and silently
+  // rejects the entire log. Drop them and say so.
+  // State channels report TEXT ("CL - Normal"). Counting only numbers called a
+  // live Fuel System Status channel empty and threw away 4,057 samples.
+  const STATE_ROLES = new Set(["closedLoop", "pe"]);
+  const isSample = (v, textOk) => typeof v === "number" || (textOk && typeof v === "string" && v.trim() !== "");
+  const hasDataFor = role => i => i !== undefined && parsed.rows.some(r => isSample(r[i], STATE_ROLES.has(role)));
   const candidates = detectCandidates(parsed.headers);
   const ch = {}, silentChannels = [];
   for (const [role, idx] of Object.entries(chAll)) {
     if (Array.isArray(idx)) {                       // trims: keep every live bank
-      const live = idx.filter(hasData);
+      const live = idx.filter(hasDataFor(role));
       if (live.length) ch[role] = live;
       else silentChannels.push({ role, column: parsed.headers[idx[0]] });
       continue;
@@ -933,6 +1063,7 @@ export function analyze(text, opts = {}) {
     // one carried data — taking the first match would have found nothing.
     const overridden = opts.channels && role in opts.channels;
     const pool = overridden ? [idx] : (candidates[role] || [idx]);
+    const hasData = hasDataFor(role);
     const live = pool.find(hasData);
     if (live !== undefined) {
       ch[role] = live;
@@ -957,6 +1088,11 @@ export function analyze(text, opts = {}) {
       // a dead channel that another live column covers is a note, not a gap
       ? `“${s.column}” was logged but contains no samples — “${s.superseded}” is being used for ${s.role} instead. Worth removing the dead channel from the layout.`
       : `“${s.column}” was logged but contains no samples, so the ${s.role} check was skipped. The channel is in your scanner layout but the device never reported.`);
+  const loopCheck = crossCheckLoop(parsed, ch, opts);
+  if (loopCheck?.suspect)
+    filtered.warnings.push(`“${loopCheck.channel}” and the commanded mixture disagree about closed loop on ${loopCheck.disagreePct}% of ${loopCheck.rows} rows (limit ${loopCheck.limitPct}%). The status channel is being trusted — check it is the right channel and that it logs as often as commanded λ before relying on the closed-/open-loop split.`);
+  if (loopCheck?.unreadable)
+    filtered.warnings.push(`“${loopCheck.channel}” had ${loopCheck.unreadable} value(s) that are not a recognised fuel system state (${loopCheck.unreadableValues.map(v => `“${v}”`).join(", ")}); those rows were treated as unknown loop state.`);
   const yRole = ch.map !== undefined ? "map" : "load";
   return {
     headers: parsed.headers,
@@ -970,8 +1106,9 @@ export function analyze(text, opts = {}) {
     pcmStoich: resolveStoichs(parsed, ch, opts).pcm,
     widebandStoich: resolveStoichs(parsed, ch, opts).wb,
     silentChannels,
+    loopCheck,
     emptyChannels: parsed.headers
-      .map((h, i) => (parsed.rows.some(r => typeof r[i] === "number") ? null : h))
+      .map((h, i) => (parsed.rows.some(r => isSample(r[i], true)) ? null : h))
       .filter(Boolean),
     rowCount: parsed.rows.length,
     keptCount: filtered.kept.length,
@@ -1113,7 +1250,9 @@ export function analyzeVE(parsed, ch, channelUnits, opts = {}) {
   const rpmBin = opts.veRpmBin || 500, loadBin = opts.veLoadBin || 10;
   const minSamples = opts.minSamples || 20;
   const cells = new Map();
-  let openLoop = 0, closedLoopSkipped = 0;
+  let openLoop = 0, closedLoopSkipped = 0, warmupSkipped = 0, decelSkipped = 0, faultSkipped = 0;
+  const loop = makeLoopReader(parsed, ch);
+  const isWarmup = makeWarmupTest(parsed, ch, channelUnits, opts);
 
   for (const row of parsed.rows) {
     const rpm = num(row, ch.rpm), rawMap = num(row, ch.map);
@@ -1121,12 +1260,18 @@ export function analyzeVE(parsed, ch, channelUnits, opts = {}) {
     const cmd = toLambda(num(row, cmdIdx), cmdScale, stoichs.pcm?.value);
     if (rpm === null || rawMap === null || meas === null || cmd === null || rpm < 500) continue;
 
-    // Open loop = the PCM is not trimming to the narrowband. A commanded
-    // mixture away from stoichiometric is the reliable marker; an explicit
-    // closed-loop flag, when logged, is better still.
-    const flagged = ch.closedLoop !== undefined ? isOn(row[ch.closedLoop]) : null;
-    const isOpenLoop = flagged === false || (flagged === null && Math.abs(cmd - 1) > 0.02);
-    if (!isOpenLoop) { closedLoopSkipped++; continue; }
+    // Open loop = the PCM is not trimming to the narrowband. Without Fuel
+    // System Status, a commanded mixture away from stoichiometric marks it.
+    // With it, the status decides — so a warm session with closed loop
+    // disabled counts even at λ 1.00 — and adds vetoes: "OL - Accel/Decel" at
+    // λ 1.00 is decel fuel cut (the wideband reads air, and the cell would be
+    // "corrected" by 50%), and warm-up open loop is wall-wetting, not VE.
+    const status = loop ? loop(row) : null;
+    const nearStoich = Math.abs(cmd - 1) <= 0.02;
+    if (status ? status.closed : nearStoich) { closedLoopSkipped++; continue; }
+    if (status?.reason === "fault") { faultSkipped++; continue; }
+    if (isWarmup(status, row)) { warmupSkipped++; continue; }
+    if (status?.reason === "accelDecel" && nearStoich) { decelSkipped++; continue; }
     if (!(cmd > 0)) continue;
 
     const x = Math.floor(rpm / rpmBin) * rpmBin;
@@ -1164,9 +1309,9 @@ export function analyzeVE(parsed, ch, channelUnits, opts = {}) {
     channel: parsed.headers[wbIdx], commandedChannel: parsed.headers[cmdIdx],
     scale: wb.scale, commandedScale: wb.commandedScale,
     fuel: { key: opts.fuel || "gasoline", ...fuel },
-    openLoopSamples: openLoop, closedLoopSkipped,
+    openLoopSamples: openLoop, closedLoopSkipped, warmupSkipped, decelSkipped, faultSkipped,
     openLoopBasis: ch.closedLoop !== undefined
-      ? `the Fuel System Status channel (${parsed.headers[ch.closedLoop]})`
+      ? `the Fuel System Status channel (${parsed.headers[ch.closedLoop]}), excluding warm-up and decel fuel cut`
       : "commanded mixture more than 2% from stoichiometric — no Fuel System Status channel was logged, so this is an inference",
     rpmBin, loadBin, minSamples,
     cells: list,

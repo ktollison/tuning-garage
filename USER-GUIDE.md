@@ -211,6 +211,16 @@ and at steady state; everything else is noise that produces confident, wrong
 corrections. If most of your log was rejected, that's the finding — go capture
 a better log.
 
+**Log Fuel System Status.** It is how the app knows closed loop from open loop,
+and power enrichment from warm-up. Without it the app guesses from commanded
+lambda and says so, and the guess counts a cold start as power enrichment. With
+it, the trim section shows how often the guess and the real status agree. Under
+95% agreement is flagged, because that usually means the wrong channel or a
+status channel logged far less often than commanded lambda. "Not ready" counts
+as warm-up only while the coolant is below the warmed-up threshold. When the
+engine is warm it means closed loop was switched off in the tune, and VE
+correction uses those rows.
+
 **Then fuel trims by MAF frequency**, with sample counts. Positive trim means
 the PCM is adding fuel, so the MAF table reads low there and that cell should go
 up by that percentage. Bins with too few samples are greyed out and excluded
