@@ -216,10 +216,25 @@ and power enrichment from warm-up. Without it the app guesses from commanded
 lambda and says so, and the guess counts a cold start as power enrichment. With
 it, the trim section shows how often the guess and the real status agree. Under
 95% agreement is flagged, because that usually means the wrong channel or a
-status channel logged far less often than commanded lambda. "Not ready" counts
-as warm-up only while the coolant is below the warmed-up threshold. When the
-engine is warm it means closed loop was switched off in the tune, and VE
-correction uses those rows.
+status channel logged far less often than commanded lambda. Two differences
+are expected and not counted against the channel: "not ready" while the O2
+sensors heat, and decel fuel cut, both with stoich still commanded.
+
+"Not ready" counts as warm-up while the coolant is cold, and for up to 120 s
+after any engine start until closed loop is first reached, which covers a hot
+restart. Outside those cases a warm, not-ready engine means closed loop was
+switched off in the tune, and VE correction uses those rows.
+
+**Two kinds of row are left out of everything, with a warning:**
+
+- **Rows the PCM never sent.** A logger can keep writing after the key goes
+  off. Rows with module voltage below 8 V, or with every channel unchanged for
+  30 s or more, are dropped. The "Filtered out" table shows them as "PCM not
+  reporting".
+- **Wideband readings richer than λ 0.60,** and the 2 s after each stretch. No
+  running engine sits there; it is the controller switched off or still heating
+  (an AEM on the ProLink analog input reads 7.31 AFR with no power). A reading
+  pegged lean is kept, because that may be the engine.
 
 **Then fuel trims by MAF frequency**, with sample counts. Positive trim means
 the PCM is adding fuel, so the MAF table reads low there and that cell should go

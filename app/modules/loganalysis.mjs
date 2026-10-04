@@ -35,6 +35,9 @@ const PATTERNS = {
   pe:          [/power\s*enrich/i, /\bpe\b/i],
   closedLoop:  [/closed.?loop/i, /fuel\s*sys/i, /\bcl\b/i],
   knockRetard: [/knock\s*retard/i, /\bkr\b/i],
+  // PCM supply voltage. Collapsing toward 0 V is the key going off — the one
+  // unambiguous sign the rest of the row is no longer the PCM's live data.
+  moduleVoltage: [/control\s*module\s*volt/i, /\b(pcm|ecm|ecu)\s*volt/i, /\b(battery|system|ignition)\s*volt/i],
   spark:       [/spark\s*adv/i, /ignition\s*timing/i, /timing\s*adv/i],
   // HP Tuners writes the noun first ("Equivalence Ratio Commanded"), so match
   // both word orders rather than assuming "commanded" comes first.
@@ -390,15 +393,41 @@ export function makeLoopReader(parsed, ch) {
 // Trims are only trustworthy in closed loop with working feedback.
 const trimsValid = s => !!s && s.closed && s.reason !== "fault";
 
-// "Not ready" is warm-up only while the engine is cold. Warm, it is closed
-// loop switched off on purpose, and those rows are exactly the ones VE tuning
-// needs. No usable coolant reading → treated as warm-up, the cautious reading.
+// "Not ready" means the PCM's closed-loop conditions are not met. That is
+// warm-up while the coolant is cold, AND after any restart while the O2
+// sensors heat — a hot restart at 185 °F sat in "OL - Not Ready" for 16 s, and
+// 0.41.0 took those rows for closed loop switched off on purpose. Only warm,
+// not-ready rows that are not just after a start are treated as deliberate
+// open loop, which is what VE tuning with closed loop disabled produces.
+// No usable coolant reading → treated as warm-up, the cautious reading.
+export const RESTART = {
+  runningRpm: 400,      // at or above this the engine is running
+  warmupSec: 120,       // after a start, "not ready" is warm-up until closed loop or this long
+  gapSec: 2,            // no RPM for this long → assume the engine may have stopped
+};
 function makeWarmupTest(parsed, ch, channelUnits, opts = {}) {
   const f = { ...DEFAULT_FILTERS, ...(opts.filters || {}) };
   const req = requireUnit(channelUnits, "ect", "temperature", f.minEctUnit, "coolant temperature");
   const threshold = req.ok ? convert(f.minEct, f.minEctUnit, req.unit) : null;
+  const R = { ...RESTART, ...(opts.restart || {}) };
+  const loop = makeLoopReader(parsed, ch);
+  const ti = ch.time ?? parsed.timeIdx;
+  const afterStart = new Set();
+  let running = null, startT = null, closedSinceStart = false, lastRpmT = null;
+  for (const row of parsed.rows) {
+    const t = num(row, ti), rpm = num(row, ch.rpm);
+    if (t !== null && lastRpmT !== null && t - lastRpmT > R.gapSec) running = false;
+    if (rpm !== null) {
+      const now = rpm >= R.runningRpm;
+      if (now && running === false) { startT = t; closedSinceStart = false; }
+      running = now; lastRpmT = t;
+    }
+    if (loop?.(row)?.closed) closedSinceStart = true;
+    if (startT !== null && t !== null && !closedSinceStart && t - startT <= R.warmupSec) afterStart.add(row);
+  }
   return (status, row) => {
     if (status?.reason !== "notReady") return false;
+    if (afterStart.has(row)) return true;
     const ect = num(row, ch.ect);
     return threshold === null || ect === null || ect < threshold;
   };
@@ -407,6 +436,11 @@ function makeWarmupTest(parsed, ch, channelUnits, opts = {}) {
 // The inference the app used before it could read the status channel, kept as
 // a cross-check: a status channel that is misconfigured, mislabelled or badly
 // lagging shows up as disagreement with what the PCM was commanding.
+// Two disagreements are the status being RIGHT and the inference wrong, so
+// they are counted as explained rather than as evidence against the channel:
+// open loop at stoich while the O2 sensors are not ready, and decel fuel cut
+// ("OL - Accel/Decel") with stoich still commanded. Counting them fired the
+// warning at 19.5% on a log with a healthy status channel.
 export function crossCheckLoop(parsed, ch, opts = {}) {
   const loop = makeLoopReader(parsed, ch);
   if (!loop || ch.commandedAfr === undefined) return null;
@@ -417,7 +451,7 @@ export function crossCheckLoop(parsed, ch, opts = {}) {
   if (!["lambda", "eq", "afr"].includes(scale.scale) || (scale.scale === "afr" && !pcm)) return null;
 
   let rows = 0, agree = 0, statusClosedInferredOpen = 0, statusOpenInferredClosed = 0,
-      notReadyRich = 0, unreadable = 0;
+      notReadyAtStoich = 0, decelAtStoich = 0, notReadyRich = 0, unreadable = 0;
   const unreadableValues = new Set();
   for (const row of parsed.rows) {
     const raw = row[ch.closedLoop];
@@ -430,20 +464,108 @@ export function crossCheckLoop(parsed, ch, opts = {}) {
     const inferredClosed = Math.abs(cmd - 1) <= 0.01;
     if (inferredClosed === s.closed) agree++;
     else if (s.closed) statusClosedInferredOpen++;
+    else if (s.reason === "notReady") notReadyAtStoich++;
+    else if (s.reason === "accelDecel") decelAtStoich++;
     else statusOpenInferredClosed++;
     if (s.reason === "notReady" && cmd < 0.98) notReadyRich++;
   }
   if (!rows && !unreadable) return null;
-  const disagreePct = rows ? +((1 - agree / rows) * 100).toFixed(1) : null;
+  const explained = notReadyAtStoich + decelAtStoich;
+  const unexplained = statusClosedInferredOpen + statusOpenInferredClosed;
+  const disagreePct = rows ? +(unexplained / rows * 100).toFixed(1) : null;
   const limit = opts.loopDisagreePct ?? 5;
   return {
     channel: parsed.headers[ch.closedLoop], commandedChannel: header,
     rows, agree, agreementPct: rows ? +(agree / rows * 100).toFixed(1) : null,
+    explained, unexplained,
+    consistentPct: rows ? +((agree + explained) / rows * 100).toFixed(1) : null,
     disagreePct, limitPct: limit, suspect: disagreePct !== null && disagreePct > limit,
-    statusClosedInferredOpen, statusOpenInferredClosed, notReadyRich,
+    statusClosedInferredOpen, statusOpenInferredClosed, notReadyAtStoich, decelAtStoich, notReadyRich,
     unreadable, unreadableValues: [...unreadableValues],
     basis: "inferred closed loop = commanded within 1% of stoichiometric",
   };
+}
+
+// ---------- rows the PCM never sent ----------
+// A logger can go on writing rows after the PCM has stopped answering. One
+// real log carried 4.8 minutes of engine data and then 60.3 minutes of
+// byte-identical rows with the key off: module voltage 0 V, RPM held at its
+// last value of 834.75. Analysed as data, those rows produced a VE
+// "correction" of ×0.4975 from 102,449 samples of nothing.
+export const PCM_SILENCE = {
+  minModuleVolts: 8,    // below this the PCM is powering down or off (cranking stays above ~9.5 V)
+  frozenSec: 30,        // every channel unchanged this long → not live data
+  minFrozenChannels: 4, // a log of a few flags can legitimately sit still
+};
+
+export function findPcmSilence(parsed, ch, channelUnits, opts = {}) {
+  const P = { ...PCM_SILENCE, ...(opts.pcmSilence || {}) };
+  const dead = new Set();
+  let voltageRows = 0;
+  const vIdx = ch.moduleVoltage;
+  const vUsable = vIdx !== undefined && channelUnits.moduleVoltage?.unit === "V";
+  if (vUsable) parsed.rows.forEach((r, i) => {
+    const v = num(r, vIdx);
+    if (v !== null && v < P.minModuleVolts) { dead.add(i); voltageRows++; }
+  });
+
+  const ti = ch.time ?? parsed.timeIdx ?? 0;
+  const dataCols = parsed.headers.map((_, k) => k).filter(k => k !== ti);
+  const frozenRuns = [];
+  let frozenRows = 0;
+  if (dataCols.length >= P.minFrozenChannels) {
+    const same = (a, b) => dataCols.every(k => a[k] === b[k]);
+    const live = r => dataCols.some(k => r[k] !== null && r[k] !== undefined && r[k] !== "");
+    const close = (a, b) => {
+      const t0 = num(parsed.rows[a], ti), t1 = num(parsed.rows[b], ti);
+      if (b > a && t0 !== null && t1 !== null && t1 - t0 >= P.frozenSec && live(parsed.rows[a])) {
+        // the first row of the run is the last real reading — keep it
+        // counted whether or not the voltage rule already caught them — the
+        // two are independent evidence, and the total below is de-duplicated
+        for (let i = a + 1; i <= b; i++) { frozenRows++; dead.add(i); }
+        frozenRuns.push({ from: t0, to: t1, rows: b - a });
+      }
+    };
+    let start = 0;
+    for (let i = 1; i < parsed.rows.length; i++)
+      if (!same(parsed.rows[i], parsed.rows[i - 1])) { close(start, i - 1); start = i; }
+    close(start, parsed.rows.length - 1);
+  }
+  return {
+    dead, rows: dead.size, voltageRows, frozenRows, frozenRuns,
+    voltageChannel: vUsable ? parsed.headers[vIdx] : null,
+    minModuleVolts: P.minModuleVolts, frozenSec: P.frozenSec,
+  };
+}
+
+// ---------- wideband validity ----------
+// A wideband controller that is off or still heating is not reporting a
+// mixture. Over the MPVI's analog input the AEM read 7.3125 AFR (λ 0.497)
+// with no power, then λ 0.50–0.53 for 27 s after key-on while it heated —
+// and those samples became "190 power-enrichment samples at λ 0.526" and VE
+// multipliers of ×0.5. No running engine sits below λ 0.60, so a reading
+// below that is the controller, not the engine. Rich is the side to bound:
+// a reading pegged LEAN may be the engine and must stay visible.
+export const WIDEBAND_VALID = {
+  minLambda: 0.6,
+  settleSec: 2,         // ignore this long after an invalid stretch ends
+};
+
+export function makeWidebandReader(parsed, ch, scale, stoich, opts = {}) {
+  const W = { ...WIDEBAND_VALID, ...(opts.widebandValid || {}) };
+  const ti = ch.time ?? parsed.timeIdx;
+  const values = new Map();
+  const stats = { implausible: 0, settling: 0, minLambda: W.minLambda, settleSec: W.settleSec };
+  let lastBad = null;
+  for (const row of parsed.rows) {
+    const l = toLambda(num(row, ch.widebandAfr), scale, stoich);
+    if (l === null) continue;
+    const t = num(row, ti);
+    if (l < W.minLambda) { stats.implausible++; if (t !== null) lastBad = t; continue; }
+    if (t !== null && lastBad !== null && t - lastBad < W.settleSec) { stats.settling++; continue; }
+    values.set(row, l);
+  }
+  return { read: row => values.get(row) ?? null, stats };
 }
 
 // ---------- filtering ----------
@@ -781,12 +903,13 @@ export function analyzeWideband(parsed, ch, channelUnits, opts = {}) {
   const clPairs = [];
   const loop = makeLoopReader(parsed, ch);
   const isWarmup = makeWarmupTest(parsed, ch, channelUnits, opts);
+  const wbReader = makeWidebandReader(parsed, ch, wbScale.scale, stoichs.wb.value, opts);
   let warmupExcluded = 0;
   const clProxy = ch.closedLoop === undefined && cmdIdx !== undefined
     && (cmdScale.scale === "lambda" || cmdScale.scale === "eq" || cmdScale.scale === "afr");
 
   for (const row of parsed.rows) {
-    const wb = toLambda(num(row, wbIdx), wbScale.scale, stoichs.wb.value);
+    const wb = wbReader.read(row);
     if (wb === null) continue;
     const cmd = cmdIdx === undefined ? null : toLambda(num(row, cmdIdx), cmdScale.scale, stoichs.pcm?.value);
     const tps = num(row, ch.tps);
@@ -877,6 +1000,7 @@ export function analyzeWideband(parsed, ch, channelUnits, opts = {}) {
                      warmupExcluded },
     wotSamples, leanWotSamples,
     worstWot,
+    sensorInvalid: wbReader.stats,
     wot,
     closedLoopCheck,
     closedLoopBasis: ch.closedLoop !== undefined
@@ -1037,7 +1161,8 @@ export function analyze(text, opts = {}) {
   if (!raw.headers.length) return { error: "no data rows in this CSV" };
   // Interval-logged files have no row where all the needed channels coexist,
   // so they must be put on a common time base before anything else runs.
-  const parsed = raw.sparse ? densify(raw, { intervalMs: opts.intervalMs || 100 }) : raw;
+  const full = raw.sparse ? densify(raw, { intervalMs: opts.intervalMs || 100 }) : raw;
+  let parsed = full;
   const chAll = { ...detectChannels(parsed.headers), ...(opts.channels || {}) };
 
   // A channel can be present in the header and carry no data at all — the
@@ -1081,14 +1206,31 @@ export function analyze(text, opts = {}) {
     channelUnits[role] = { column: header, unit: u?.unit ?? null, quantity: u?.quantity ?? null, convertible: !!u?.convertible };
   }
 
+  // Rows written after the PCM stopped answering are removed before ANY
+  // analysis sees them — every section below would otherwise treat them as data.
+  const silence = findPcmSilence(full, ch, channelUnits, opts);
+  if (silence.rows) parsed = { ...full, rows: full.rows.filter((_, i) => !silence.dead.has(i)) };
+
   const missing = ["mafHz", "ltft", "stft", "ect", "closedLoop", "pe", "tps", "rpm"].filter(r => ch[r] === undefined);
   const filtered = filterRows(parsed, ch, opts.filters, channelUnits);
+  filtered.rejected = { pcmSilent: silence.rows, ...filtered.rejected };
+  if (silence.rows) {
+    const parts = [];
+    if (silence.voltageRows) parts.push(`“${silence.voltageChannel}” below ${silence.minModuleVolts} V on ${silence.voltageRows.toLocaleString()} (key off or powering down)`);
+    if (silence.frozenRuns.length) parts.push(`every channel identical for ${silence.frozenSec} s or more on ${silence.frozenRows.toLocaleString()} (${silence.frozenRuns.map(r => `${r.from.toFixed(1)}–${r.to.toFixed(1)} s`).join(", ")})`);
+    filtered.warnings.push(`${silence.rows.toLocaleString()} rows were written after the PCM stopped reporting and were left out of every analysis — ${parts.join("; ")}${parts.length > 1 ? "; the two overlap" : ""}. The logger kept recording without fresh data.`);
+  }
   for (const s of silentChannels)
     filtered.warnings.push(s.superseded
       // a dead channel that another live column covers is a note, not a gap
       ? `“${s.column}” was logged but contains no samples — “${s.superseded}” is being used for ${s.role} instead. Worth removing the dead channel from the layout.`
       : `“${s.column}” was logged but contains no samples, so the ${s.role} check was skipped. The channel is in your scanner layout but the device never reported.`);
   const loopCheck = crossCheckLoop(parsed, ch, opts);
+  const wideband = analyzeWideband(parsed, ch, channelUnits, opts);
+  if (wideband.present && wideband.sensorInvalid?.implausible) {
+    const v = wideband.sensorInvalid;
+    filtered.warnings.push(`“${wideband.channel}” read richer than λ ${v.minLambda} on ${v.implausible.toLocaleString()} samples — the controller was off or still heating, not the engine running that rich. Those samples, and ${v.settleSec} s after each stretch (${v.settling.toLocaleString()} more), were left out of the wideband and VE analysis.`);
+  }
   if (loopCheck?.suspect)
     filtered.warnings.push(`“${loopCheck.channel}” and the commanded mixture disagree about closed loop on ${loopCheck.disagreePct}% of ${loopCheck.rows} rows (limit ${loopCheck.limitPct}%). The status channel is being trusted — check it is the right channel and that it logs as often as commanded λ before relying on the closed-/open-loop split.`);
   if (loopCheck?.unreadable)
@@ -1110,7 +1252,9 @@ export function analyze(text, opts = {}) {
     emptyChannels: parsed.headers
       .map((h, i) => (parsed.rows.some(r => isSample(r[i], true)) ? null : h))
       .filter(Boolean),
-    rowCount: parsed.rows.length,
+    rowCount: full.rows.length,
+    pcmSilence: silence.rows ? { rows: silence.rows, voltageRows: silence.voltageRows, frozenRows: silence.frozenRows,
+                                 frozenRuns: silence.frozenRuns, voltageChannel: silence.voltageChannel } : null,
     keptCount: filtered.kept.length,
     rejected: filtered.rejected,
     filters: filtered.filters,
@@ -1131,7 +1275,7 @@ export function analyze(text, opts = {}) {
       yUnit: yRole === "map" && loadToKpa(channelUnits, "map") ? "kPa" : (channelUnits[yRole]?.unit ?? null),
       valueUnit: "%",
     },
-    wideband: analyzeWideband(parsed, ch, channelUnits, opts),
+    wideband,
     spark: analyzeSpark(parsed, ch, channelUnits, opts),
     airModels: analyzeAirModels(parsed, ch, channelUnits, opts),
     ve: analyzeVE(parsed, ch, channelUnits, opts),
@@ -1246,6 +1390,7 @@ export function analyzeVE(parsed, ch, channelUnits, opts = {}) {
     return { present: false,
              reason: "commanded mixture is in AFR and the PCM's stoichiometric ratio could not be established from this log, so commanded lambda — and therefore open loop — cannot be determined without guessing" };
   const wbIdx = ch.widebandAfr, cmdIdx = ch.commandedAfr;
+  const wbReader = makeWidebandReader(parsed, ch, wbScale, stoichs.wb.value, opts);
 
   const rpmBin = opts.veRpmBin || 500, loadBin = opts.veLoadBin || 10;
   const minSamples = opts.minSamples || 20;
@@ -1256,7 +1401,7 @@ export function analyzeVE(parsed, ch, channelUnits, opts = {}) {
 
   for (const row of parsed.rows) {
     const rpm = num(row, ch.rpm), rawMap = num(row, ch.map);
-    const meas = toLambda(num(row, wbIdx), wbScale, stoichs.wb.value);
+    const meas = wbReader.read(row);
     const cmd = toLambda(num(row, cmdIdx), cmdScale, stoichs.pcm?.value);
     if (rpm === null || rawMap === null || meas === null || cmd === null || rpm < 500) continue;
 

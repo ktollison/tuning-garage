@@ -1371,7 +1371,7 @@ async function logAnalysis(rel, filters) {
     </div>
     <table style="margin-bottom:10px"><tr><th>Filtered out</th><th>Rows</th></tr>
       ${Object.entries(rej).filter(([, n]) => n).map(([k, n]) =>
-        `<tr><td>${esc({noData:"No data in row (between sessions)",cold:"Not warmed up",openLoop:"Open loop",loopUnknown:"Loop state unknown (no status reading)",powerEnrich:"Power enrichment",transient:"Transient (throttle/RPM moving)",notRunning:"Engine not running",incompleteTrim:"Only one trim channel live",noTrimData:"No trim data in row"}[k] || k)}</td><td class="num">${n.toLocaleString()}</td></tr>`).join("")}
+        `<tr><td>${esc({pcmSilent:"PCM not reporting (key off / logger kept recording)",noData:"No data in row (between sessions)",cold:"Not warmed up",openLoop:"Open loop",loopUnknown:"Loop state unknown (no status reading)",powerEnrich:"Power enrichment",transient:"Transient (throttle/RPM moving)",notRunning:"Engine not running",incompleteTrim:"Only one trim channel live",noTrimData:"No trim data in row"}[k] || k)}</td><td class="num">${n.toLocaleString()}</td></tr>`).join("")}
     </table>
 
     ${loopCheckHtml(r.loopCheck)}
@@ -1563,9 +1563,10 @@ function loopCheckHtml(c) {
   if (!c || !c.rows) return "";
   return `<div class="note" style="margin-bottom:6px${c.suspect ? ";color:var(--warn)" : ""}">
     ${c.suspect ? "⚠ " : ""}<b>Loop state from ${esc(c.channel)}.</b>
-    Cross-check against commanded mixture: agrees on ${c.agreementPct}% of ${c.rows.toLocaleString()} rows
-    (${c.statusOpenInferredClosed.toLocaleString()} open loop at stoichiometric, ${c.statusClosedInferredOpen.toLocaleString()} closed loop off stoichiometric; warning above ${c.limitPct}%).
-    ${c.notReadyRich ? `${c.notReadyRich.toLocaleString()} rich “not ready” rows — warm-up while cold — would have been read as power enrichment without this channel.` : ""}
+    Cross-check against commanded mixture: consistent on ${c.consistentPct}% of ${c.rows.toLocaleString()} rows.
+    ${c.explained ? `${c.explained.toLocaleString()} rows differ for a known reason (${[c.notReadyAtStoich ? `${c.notReadyAtStoich.toLocaleString()} O2 sensors not ready` : "", c.decelAtStoich ? `${c.decelAtStoich.toLocaleString()} decel fuel cut` : ""].filter(Boolean).join(", ")}, with stoichiometric still commanded).` : ""}
+    ${c.unexplained ? `${c.unexplained.toLocaleString()} rows (${c.disagreePct}%) disagree with no known reason; the warning fires above ${c.limitPct}%.` : "No unexplained disagreement."}
+    ${c.notReadyRich ? `${c.notReadyRich.toLocaleString()} rich “not ready” rows (warm-up, cold or just after a start) would have been read as power enrichment without this channel.` : ""}
   </div>`;
 }
 
