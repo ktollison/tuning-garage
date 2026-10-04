@@ -41,8 +41,11 @@ const PATTERNS = {
   spark:       [/spark\s*adv/i, /ignition\s*timing/i, /timing\s*adv/i],
   // HP Tuners writes the noun first ("Equivalence Ratio Commanded"), so match
   // both word orders rather than assuming "commanded" comes first.
-  commandedAfr:[/commanded.*(afr|equiv|lambda)/i, /\beq\s*cmd\b/i, /afr.*(cmd|command)/i, /target.*(afr|lambda)/i,
-                /(equiv|lambda|air-?fuel\s*ratio).*command/i],
+  // "EQ Ratio Commanded" / "Commanded EQ Ratio" (GM enhanced) went undetected:
+  // with no commanded channel only the λ 1.0 backstop ran, and a WOT bin 11.8%
+  // leaner than commanded passed.
+  commandedAfr:[/commanded.*(afr|equiv|lambda|\beq\b)/i, /\beq\s*cmd\b/i, /afr.*(cmd|command)/i, /target.*(afr|lambda)/i,
+                /(equiv|lambda|air-?fuel\s*ratio|\beq\b).*command/i],
   // On Gen III there is no CAN wideband: the controller feeds the MPVI's
   // analog input over the ProLink cable, and VCM Scanner names that channel
   // after the DEVICE — "MPVI2.1 -> AEM 30-(03x0,2340,5130)" — with no "AFR",
@@ -445,8 +448,7 @@ export function crossCheckLoop(parsed, ch, opts = {}) {
   const loop = makeLoopReader(parsed, ch);
   if (!loop || ch.commandedAfr === undefined) return null;
   const header = parsed.headers[ch.commandedAfr];
-  const sample = parsed.rows.map(r => num(r, ch.commandedAfr)).filter(v => v !== null).slice(0, 400);
-  const scale = opts.commandedScale ? { scale: opts.commandedScale } : detectScale(header, sample);
+  const scale = (opts.scales || resolveScales(parsed, ch, opts)).cmd;
   const pcm = scale.scale === "afr" ? resolveStoichs(parsed, ch, opts).pcm : null;
   if (!["lambda", "eq", "afr"].includes(scale.scale) || (scale.scale === "afr" && !pcm)) return null;
 
@@ -588,7 +590,7 @@ export const DEFAULT_FILTERS = {
   excludePe: true,
 };
 
-export function filterRows(parsed, ch, opts = {}, channelUnits = {}) {
+export function filterRows(parsed, ch, opts = {}, channelUnits = {}, scales = null) {
   const f = { ...DEFAULT_FILTERS, ...opts };
   const kept = [];
   const warnings = [];
@@ -633,8 +635,7 @@ export function filterRows(parsed, ch, opts = {}, channelUnits = {}) {
   let peProxy = null;
   if (f.excludePe && ch.pe === undefined && ch.closedLoop === undefined && ch.commandedAfr !== undefined) {
     const cmdHeader = parsed.headers[ch.commandedAfr];
-    const sample = parsed.rows.slice(0, 400).map(r => num(r, ch.commandedAfr)).filter(v => v !== null);
-    const s = detectScale(cmdHeader, sample);
+    const s = (scales || resolveScales(parsed, ch, {})).cmd;
     // Commanded AFR is divided by the PCM's stoich, never a hardcoded 14.7:
     // this PCM uses 14.12, so 14.12/14.7 = 0.9605 read every closed-loop row
     // as enrichment and the trim analysis kept 1 row of 21,078.
@@ -791,6 +792,15 @@ export function detectScale(header, sampleValues) {
       ? { scale: fromUnit, basis: `declared unit “${declared}” — note the channel name says ${fromName.toUpperCase()}; the unit was trusted`, nameConflict: { name: fromName, unit: fromUnit } }
       : { scale: fromUnit, basis: `declared unit “${declared}”` };
   }
+  // A NAME saying "equivalence ratio" does not say which way it runs. SAE
+  // J1979 calls its commanded λ the "equivalence ratio" — HP Tuners logs it as
+  // "Equivalence Ratio Commanded", below 1 rich — while GM's enhanced EQ is
+  // fuel/air, above 1 rich. Believing the name inverted the mixture on any log
+  // exported without units. resolveScales() decides it from the data instead.
+  if (fromName === "eq")
+    return { scale: "ratio-ambiguous", nameHint: "eq",
+             basis: "the name says equivalence ratio but no unit is stated — λ and EQ run in opposite directions",
+             assumedLambda: true };
   if (fromName) return { scale: fromName, basis: "stated in the channel name" };
   const vals = sampleValues.filter(Number.isFinite);
   if (!vals.length) return { scale: null, basis: "no numeric samples" };
@@ -830,7 +840,8 @@ export function resolveStoichs(parsed, ch, opts = {}) {
   let lam = null, afr = null;
   for (const i of (detectCandidates(parsed.headers).commandedAfr || [])) {
     const s = detectScale(parsed.headers[i], sample(i).slice(0, 400));
-    if (!lam && (s.scale === "lambda" || s.scale === "eq")) lam = { i, scale: s.scale };
+    // at stoich λ and EQ are both 1.00, so direction does not matter here
+    if (!lam && (s.scale === "lambda" || s.scale === "eq" || s.scale === "ratio-ambiguous")) lam = { i, scale: s.scale };
     if (!afr && s.scale === "afr") afr = { i };
   }
   if (!afr) return { wb, pcm: null };          // nothing commanded in AFR: nothing to convert
@@ -841,6 +852,10 @@ export function resolveStoichs(parsed, ch, opts = {}) {
     for (const r of parsed.rows) {
       const a = num(r, afr.i), l0 = num(r, lam.i);
       if (a === null || l0 === null || l0 === 0) continue;
+      // key on, engine off: commanded AFR shows a priming figure (5.4 on this
+      // car) while commanded λ sits at 1.00 — not a stoich pair
+      const rpm = num(r, ch.rpm);
+      if (rpm !== null && rpm < 400) continue;
       const l = lam.scale === "eq" ? 1 / l0 : l0;
       if (Math.abs(l - 1) <= 0.02) ratios.push(a / l);   // closed-loop pairs only
     }
@@ -874,6 +889,109 @@ export function toLambda(value, scale, stoich) {
   return value;                       // lambda, or ratio assumed to be lambda
 }
 
+// ---------- λ or EQ, from the data ----------
+// A ratio channel with no unit is λ (below 1 rich) or EQ (above 1 rich), and
+// guessing wrong inverts every lean/rich verdict. Physics settles it where the
+// log allows; only with no evidence at all is λ assumed, and said so loudly.
+//   commanded: a paired commanded-AFR channel moves WITH λ and AGAINST EQ;
+//              and no PCM commands lean at wide-open throttle.
+//   wideband:  a narrowband O2 reading rich (> 0.6 V) means λ is lower; and
+//              when the PCM commands rich, measured λ goes down.
+const mean = a => a.reduce((x, y) => x + y, 0) / a.length;
+const cv = a => { const m = mean(a); return Math.sqrt(mean(a.map(v => (v - m) ** 2))) / Math.abs(m); };
+
+function resolveCommandedRatio(parsed, ch, s) {
+  const x = ch.commandedAfr;
+  const others = (detectCandidates(parsed.headers).commandedAfr || []).filter(i => i !== x);
+  for (const a of others) {
+    const sa = detectScale(parsed.headers[a], parsed.rows.map(r => num(r, a)).filter(v => v !== null).slice(0, 400));
+    if (sa.scale !== "afr") continue;
+    // Stoich rows stay in: they are what gives the ratio something to vary
+    // against. With no variation both products are constant and prove nothing.
+    const q = [], p = [], vs = [];
+    for (const r of parsed.rows) {
+      const v = num(r, x), afr = num(r, a), rpm = num(r, ch.rpm);
+      if (v === null || afr === null || v <= 0 || (rpm !== null && rpm < 400)) continue;
+      q.push(afr / v); p.push(afr * v); vs.push(v);
+    }
+    if (q.length >= 20 && cv(vs) >= 0.01) {
+      const cq = cv(q), cp = cv(p);
+      if (cq < 0.02 && cq < cp / 2.5) return { scale: "lambda", basis: `no unit stated; λ, because it moves with “${parsed.headers[a]}” (commanded AFR ÷ it varies ${(cq * 100).toFixed(2)}%, × it varies ${(cp * 100).toFixed(2)}%, over ${q.length} rows)`, resolved: true };
+      if (cp < 0.02 && cp < cq / 2.5) return { scale: "eq", basis: `no unit stated; EQ, because it moves against “${parsed.headers[a]}” (commanded AFR × it varies ${(cp * 100).toFixed(2)}%, ÷ it varies ${(cq * 100).toFixed(2)}%, over ${p.length} rows)`, resolved: true };
+    }
+  }
+  if (ch.tps !== undefined && unitFits("tps", parsed.headers[ch.tps]).declared) {
+    const wot = [];
+    for (const r of parsed.rows) {
+      const t = num(r, ch.tps), v = num(r, x);
+      if (t !== null && v !== null && t >= 80 && Math.abs(v - 1) > 0.02) wot.push(v);
+    }
+    if (wot.length >= 10) {
+      const med = wot.slice().sort((a, b) => a - b)[wot.length >> 1];
+      if (med < 1) return { scale: "lambda", basis: `no unit stated; λ, because it falls below 1.00 at wide-open throttle (median ${med.toFixed(3)} over ${wot.length} samples) and no PCM commands lean there`, resolved: true };
+      return { scale: "eq", basis: `no unit stated; EQ, because it rises above 1.00 at wide-open throttle (median ${med.toFixed(3)} over ${wot.length} samples) and no PCM commands lean there`, resolved: true };
+    }
+  }
+  return s;
+}
+
+function resolveWidebandRatio(parsed, ch, s, cmdScale, opts) {
+  const x = ch.widebandAfr;
+  const plausible = v => v > 0.55 && v < 1.8;       // either reading; excludes the off/heating floor
+  const o2 = parsed.headers.map((h, i) => ({ h, i }))
+    .filter(({ h }) => /\bo2\b/i.test(h) && /(b(ank)?\s*[12]\s*s(ensor)?\s*1)\b|b[12]s1/i.test(h) && detectUnit(h)?.unit === "V")
+    .map(({ i }) => i);
+  if (o2.length) {
+    const hi = [], lo = [];
+    for (const r of parsed.rows) {
+      const v = num(r, x);
+      const volts = o2.map(i => num(r, i)).filter(w => w !== null);
+      if (v === null || !plausible(v) || !volts.length) continue;
+      const o = mean(volts);
+      if (o > 0.6) hi.push(v); else if (o < 0.3) lo.push(v);
+    }
+    if (hi.length >= 50 && lo.length >= 50) {
+      const mh = mean(hi), ml = mean(lo);
+      const what = `${mh.toFixed(3)} when the narrowband O2 sensors read rich vs ${ml.toFixed(3)} when they read lean`;
+      if (mh < ml * 0.995) return { scale: "lambda", basis: `no unit stated; λ, because it reads lower when the O2 sensors say rich (${what})`, resolved: true };
+      if (mh > ml * 1.005) return { scale: "eq", basis: `no unit stated; EQ, because it reads higher when the O2 sensors say rich (${what})`, resolved: true };
+    }
+  }
+  if (ch.commandedAfr !== undefined && cmdScale && ["lambda", "eq", "afr"].includes(cmdScale.scale)) {
+    const pcm = cmdScale.scale === "afr" ? resolveStoichs(parsed, ch, opts).pcm : null;
+    const rich = [], stoich = [];
+    for (const r of parsed.rows) {
+      const v = num(r, x);
+      const c = toLambda(num(r, ch.commandedAfr), cmdScale.scale, pcm?.value);
+      if (v === null || c === null || !plausible(v)) continue;
+      if (c < 0.95) rich.push(v); else if (Math.abs(c - 1) <= 0.01) stoich.push(v);
+    }
+    if (rich.length >= 10 && stoich.length >= 20) {
+      const mr = mean(rich), ms = mean(stoich);
+      const what = `${mr.toFixed(3)} while rich was commanded vs ${ms.toFixed(3)} at stoich`;
+      if (mr < ms * 0.99) return { scale: "lambda", basis: `no unit stated; λ, because it falls when the PCM commands rich (${what})`, resolved: true };
+      if (mr > ms * 1.01) return { scale: "eq", basis: `no unit stated; EQ, because it rises when the PCM commands rich (${what})`, resolved: true };
+    }
+  }
+  return s;
+}
+
+export function resolveScales(parsed, ch, opts = {}) {
+  const sample = i => parsed.rows.map(r => num(r, i)).filter(v => v !== null).slice(0, 400);
+  const out = { cmd: null, wb: null };
+  if (ch.commandedAfr !== undefined) {
+    out.cmd = opts.commandedScale ? { scale: opts.commandedScale, basis: "set manually" }
+      : detectScale(parsed.headers[ch.commandedAfr], sample(ch.commandedAfr));
+    if (out.cmd.scale === "ratio-ambiguous") out.cmd = resolveCommandedRatio(parsed, ch, out.cmd);
+  }
+  if (ch.widebandAfr !== undefined) {
+    out.wb = opts.widebandScale ? { scale: opts.widebandScale, basis: "set manually" }
+      : detectScale(parsed.headers[ch.widebandAfr], sample(ch.widebandAfr));
+    if (out.wb.scale === "ratio-ambiguous") out.wb = resolveWidebandRatio(parsed, ch, out.wb, out.cmd, opts);
+  }
+  return out;
+}
+
 export function analyzeWideband(parsed, ch, channelUnits, opts = {}) {
   const wbIdx = ch.widebandAfr, cmdIdx = ch.commandedAfr;
   if (wbIdx === undefined) return { present: false, reason: "no wideband channel found in this log" };
@@ -881,12 +999,9 @@ export function analyzeWideband(parsed, ch, channelUnits, opts = {}) {
   const fuel = FUELS[opts.fuel] || FUELS.gasoline;      // display only
   const stoichs = resolveStoichs(parsed, ch, opts);
   const col = i => parsed.rows.map(r => num(r, i)).filter(v => v !== null);
-  const wbScale = opts.widebandScale
-    ? { scale: opts.widebandScale, basis: "set manually" }
-    : detectScale(parsed.headers[wbIdx], col(wbIdx).slice(0, 400));
-  const cmdScale = cmdIdx === undefined ? null : (opts.commandedScale
-    ? { scale: opts.commandedScale, basis: "set manually" }
-    : detectScale(parsed.headers[cmdIdx], col(cmdIdx).slice(0, 400)));
+  const scales = opts.scales || resolveScales(parsed, ch, opts);
+  const wbScale = scales.wb;
+  const cmdScale = cmdIdx === undefined ? null : scales.cmd;
 
   // Two lean tests, because one was not enough. The absolute limit only catches
   // "leaner than stoichiometric at WOT", which is already catastrophic: a bin
@@ -1044,6 +1159,22 @@ export function analyzeSpark(parsed, ch, channelUnits, opts = {}) {
   let prevKr = 0;
   const RISE = 0.04;   // GM retard moves in ~0.088° steps; anything above noise
 
+  // GM logs retard as a positive number. A tool that logs it negative (as a
+  // timing correction) would have had every event ignored — only values at or
+  // above +0.1° counted. All-negative is read as magnitude; mixed signs are
+  // read as logged and flagged, because positive may then mean advance.
+  let krSign = 1, krSignNote = null;
+  if (krIdx !== undefined) {
+    let lo = Infinity, hi = -Infinity;
+    for (const r of parsed.rows) { const v = num(r, krIdx); if (v !== null) { if (v < lo) lo = v; if (v > hi) hi = v; } }
+    if (hi <= RISE && lo <= -krThreshold) {
+      krSign = -1;
+      krSignNote = `is logged as negative numbers (down to ${+lo.toFixed(2)}°), so its magnitude was read as knock retard. Confirm that negative means retard for this channel.`;
+    } else if (lo <= -krThreshold && hi >= krThreshold) {
+      krSignNote = `has both positive (up to ${+hi.toFixed(2)}°) and negative (down to ${+lo.toFixed(2)}°) values. Positive values were read as knock retard — if this channel logs retard as negative, knock has been missed. Check its sign convention.`;
+    }
+  }
+
   for (let i = 0; i < parsed.rows.length; i++) {
     const row = parsed.rows[i];
     const rpm = num(row, ch.rpm);
@@ -1051,7 +1182,8 @@ export function analyzeSpark(parsed, ch, channelUnits, opts = {}) {
     running++;
     let y = yRole ? num(row, ch[yRole]) : null;
     if (y !== null && yScale) y = yScale(y);
-    const kr = krIdx === undefined ? null : num(row, krIdx);
+    const krRaw = krIdx === undefined ? null : num(row, krIdx);
+    const kr = krRaw === null ? null : krRaw * krSign;
     const adv = ch.spark === undefined ? null : num(row, ch.spark);
     const iat = num(row, ch.iat), ect = num(row, ch.ect), tps = num(row, ch.tps);
 
@@ -1132,6 +1264,7 @@ export function analyzeSpark(parsed, ch, channelUnits, opts = {}) {
   return {
     present: true,
     hasKnockChannel: krIdx !== undefined,
+    krSignNote, krSign,
     hasSparkChannel: ch.spark !== undefined,
     krChannel: krIdx === undefined ? null : parsed.headers[krIdx],
     sparkChannel: ch.spark === undefined ? null : parsed.headers[ch.spark],
@@ -1156,6 +1289,78 @@ export function analyzeSpark(parsed, ch, channelUnits, opts = {}) {
   };
 }
 
+// ---------- which column plays which role ----------
+// Roles were assigned by column order alone, which picked a channel because of
+// where it sat rather than what it was. Two consequences that could hide
+// exactly what this app exists to catch:
+//   - "Air-Fuel Ratio Commanded [AFR]" matched the wideband pattern on its
+//     unit, so commanded was compared with ITSELF: a constant −3.9% (the ratio
+//     of the two stoichs) whatever the engine did, and lean never reported.
+//   - "Throttle Position Sensor [V]" sat before "Throttle Position (SAE) [%]",
+//     so throttle was read in volts: never ≥ 80% (no WOT), always < 25% (every
+//     knock event labelled possible false knock), and transients let through.
+// A candidate whose declared unit does not fit the role is now refused, a
+// commanded/target channel can never be the measurement, and one column can
+// never fill both mixture roles.
+export const ROLE_UNITS = {
+  tps: ["%"], ltft: ["%"], stft: ["%"], knockRetard: ["°"], spark: ["°"],
+  mafHz: ["Hz"], rpm: ["RPM"], moduleVoltage: ["V"],
+  map: "pressure", ect: "temperature", iat: "temperature", mafGs: "airflow", dynAir: "airflow",
+  commandedAfr: ["λ", "AFR", "EQ", "eq"], widebandAfr: ["λ", "AFR", "EQ", "eq"],
+};
+const COMMANDED_WORDS = /command|\bcmd\b|target|desired|request/i;
+
+export function unitFits(role, header) {
+  const want = ROLE_UNITS[role];
+  const u = detectUnit(header);
+  // bracketed text that is not a recognised unit ("(wideband)", "(SAE)") is
+  // part of the name, so it neither qualifies nor disqualifies a channel
+  if (!want || !u || !u.unit || !u.known) return { fits: true, declared: false, unit: null };
+  const fits = Array.isArray(want) ? want.some(w => w.toLowerCase() === u.unit.toLowerCase()) : u.quantity === want
+    // psig is a pressure, but refused later with its own reason
+    || (want === "pressure" && u.unit === "psig");
+  return { fits, declared: true, unit: u.unit };
+}
+
+// Trims logged as multipliers (1.05 = +5%) would be summed as if they were
+// percent. A % trim goes negative somewhere in any real log; a multiplier
+// never does, and sits near 1.
+function looksLikeMultiplier(parsed, idx) {
+  let n = 0, inBand = 0;
+  for (const r of parsed.rows) {
+    const v = num(r, idx);
+    if (v === null) continue;
+    n++;
+    if (v <= 0) return false;
+    if (v > 0.7 && v < 1.3) inBand++;
+  }
+  return n >= 20 && inBand === n;
+}
+
+function rankPool(role, pool, parsed, taken) {
+  const refused = [];
+  const ok = [];
+  for (const i of pool) {
+    const h = parsed.headers[i];
+    if (role === "widebandAfr" && (COMMANDED_WORDS.test(h) || taken.has(i))) {
+      refused.push({ column: h, why: "it is a commanded or target value, not a measurement" });
+      continue;
+    }
+    const f = unitFits(role, h);
+    if (!f.fits) { refused.push({ column: h, why: `its unit is ${f.unit}, and ${role} needs ${[].concat(ROLE_UNITS[role]).join(" or ")}` }); continue; }
+    if ((role === "ltft" || role === "stft") && !f.declared && looksLikeMultiplier(parsed, i)) {
+      refused.push({ column: h, why: "it states no unit and every value sits between 0.7 and 1.3 with none negative — it looks like a multiplier, not a percentage" });
+      continue;
+    }
+    ok.push({ i, declared: f.declared, unit: f.unit });
+  }
+  // declared-and-fitting before unstated; for commanded, a ratio channel
+  // before an AFR one, because AFR needs the PCM's stoich and a ratio does not
+  const rank = c => (c.declared ? 0 : 2) + (role === "commandedAfr" && /^afr$/i.test(c.unit || "") ? 1 : 0);
+  ok.sort((a, b) => rank(a) - rank(b));
+  return { pool: ok.map(c => c.i), refused };
+}
+
 export function analyze(text, opts = {}) {
   const raw = parseCsv(text);
   if (!raw.headers.length) return { error: "no data rows in this CSV" };
@@ -1175,23 +1380,30 @@ export function analyze(text, opts = {}) {
   const isSample = (v, textOk) => typeof v === "number" || (textOk && typeof v === "string" && v.trim() !== "");
   const hasDataFor = role => i => i !== undefined && parsed.rows.some(r => isSample(r[i], STATE_ROLES.has(role)));
   const candidates = detectCandidates(parsed.headers);
-  const ch = {}, silentChannels = [];
+  const ch = {}, silentChannels = [], refusedChannels = [];
+  const taken = new Set();
   for (const [role, idx] of Object.entries(chAll)) {
+    const overridden = opts.channels && role in opts.channels;
     if (Array.isArray(idx)) {                       // trims: keep every live bank
-      const live = idx.filter(hasDataFor(role));
+      const ranked = overridden ? { pool: idx, refused: [] } : rankPool(role, idx, parsed, taken);
+      for (const r of ranked.refused) refusedChannels.push({ role, ...r });
+      const live = ranked.pool.filter(hasDataFor(role));
       if (live.length) ch[role] = live;
-      else silentChannels.push({ role, column: parsed.headers[idx[0]] });
+      else if (ranked.pool.length) silentChannels.push({ role, column: parsed.headers[ranked.pool[0]] });
       continue;
     }
     // Single-column role: prefer the first candidate that actually reported.
     // Three wideband channels were configured on this car and only the analog
     // one carried data — taking the first match would have found nothing.
-    const overridden = opts.channels && role in opts.channels;
-    const pool = overridden ? [idx] : (candidates[role] || [idx]);
+    const ranked = overridden ? { pool: [idx], refused: [] } : rankPool(role, candidates[role] || [idx], parsed, taken);
+    for (const r of ranked.refused) refusedChannels.push({ role, ...r });
+    const pool = ranked.pool;
+    if (!pool.length) continue;
     const hasData = hasDataFor(role);
     const live = pool.find(hasData);
     if (live !== undefined) {
       ch[role] = live;
+      if (role === "commandedAfr") taken.add(live);
       for (const dead of pool.filter(i => i !== live && !hasData(i)))
         silentChannels.push({ role, column: parsed.headers[dead], superseded: parsed.headers[live] });
     } else silentChannels.push({ role, column: parsed.headers[pool[0]] });
@@ -1212,7 +1424,16 @@ export function analyze(text, opts = {}) {
   if (silence.rows) parsed = { ...full, rows: full.rows.filter((_, i) => !silence.dead.has(i)) };
 
   const missing = ["mafHz", "ltft", "stft", "ect", "closedLoop", "pe", "tps", "rpm"].filter(r => ch[r] === undefined);
-  const filtered = filterRows(parsed, ch, opts.filters, channelUnits);
+  // λ or EQ decided once, from the data where possible, and used everywhere
+  const scales = resolveScales(parsed, ch, opts);
+  const ctx = { ...opts, scales };
+  const filtered = filterRows(parsed, ch, opts.filters, channelUnits, scales);
+  for (const [s, role] of [[scales.cmd, "commandedAfr"], [scales.wb, "widebandAfr"]])
+    if (s?.assumedLambda)
+      filtered.warnings.push(`“${parsed.headers[ch[role]]}” states no unit and the log holds no evidence of which way it runs, so it was read as λ (below 1.00 = rich, the SAE convention). If it is EQ (above 1.00 = rich), every lean/rich figure is INVERTED — set its scale in the wideband options.`);
+  for (const role of new Set(refusedChannels.map(r => r.role)))
+    if (ch[role] === undefined)
+      filtered.warnings.push(`No usable ${role} channel: ${refusedChannels.filter(r => r.role === role).map(r => `“${r.column}” was not used because ${r.why}`).join("; ")}.`);
   filtered.rejected = { pcmSilent: silence.rows, ...filtered.rejected };
   if (silence.rows) {
     const parts = [];
@@ -1225,8 +1446,8 @@ export function analyze(text, opts = {}) {
       // a dead channel that another live column covers is a note, not a gap
       ? `“${s.column}” was logged but contains no samples — “${s.superseded}” is being used for ${s.role} instead. Worth removing the dead channel from the layout.`
       : `“${s.column}” was logged but contains no samples, so the ${s.role} check was skipped. The channel is in your scanner layout but the device never reported.`);
-  const loopCheck = crossCheckLoop(parsed, ch, opts);
-  const wideband = analyzeWideband(parsed, ch, channelUnits, opts);
+  const loopCheck = crossCheckLoop(parsed, ch, ctx);
+  const wideband = analyzeWideband(parsed, ch, channelUnits, ctx);
   if (wideband.present && wideband.sensorInvalid?.implausible) {
     const v = wideband.sensorInvalid;
     filtered.warnings.push(`“${wideband.channel}” read richer than λ ${v.minLambda} on ${v.implausible.toLocaleString()} samples — the controller was off or still heating, not the engine running that rich. Those samples, and ${v.settleSec} s after each stretch (${v.settling.toLocaleString()} more), were left out of the wideband and VE analysis.`);
@@ -1235,6 +1456,8 @@ export function analyze(text, opts = {}) {
     filtered.warnings.push(`“${loopCheck.channel}” and the commanded mixture disagree about closed loop on ${loopCheck.disagreePct}% of ${loopCheck.rows} rows (limit ${loopCheck.limitPct}%). The status channel is being trusted — check it is the right channel and that it logs as often as commanded λ before relying on the closed-/open-loop split.`);
   if (loopCheck?.unreadable)
     filtered.warnings.push(`“${loopCheck.channel}” had ${loopCheck.unreadable} value(s) that are not a recognised fuel system state (${loopCheck.unreadableValues.map(v => `“${v}”`).join(", ")}); those rows were treated as unknown loop state.`);
+  const spark = analyzeSpark(parsed, ch, channelUnits, ctx);
+  if (spark.krSignNote) filtered.warnings.push(`“${spark.krChannel}” ${spark.krSignNote}`);
   const yRole = ch.map !== undefined ? "map" : "load";
   return {
     headers: parsed.headers,
@@ -1276,9 +1499,11 @@ export function analyze(text, opts = {}) {
       valueUnit: "%",
     },
     wideband,
-    spark: analyzeSpark(parsed, ch, channelUnits, opts),
+    spark,
     airModels: analyzeAirModels(parsed, ch, channelUnits, opts),
-    ve: analyzeVE(parsed, ch, channelUnits, opts),
+    ve: analyzeVE(parsed, ch, channelUnits, ctx),
+    scales,
+    refusedChannels,
     note: "Draft readings for review. Suggestions are computed from filtered log data and must be applied by hand after you agree with them — nothing here writes to a tune.",
   };
 }

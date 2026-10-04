@@ -225,6 +225,26 @@ after any engine start until closed loop is first reached, which covers a hot
 restart. Outside those cases a warm, not-ready engine means closed loop was
 switched off in the tune, and VE correction uses those rows.
 
+**How channels are chosen.** A column is only used for a role if its unit fits:
+throttle and trims in %, pressures in a pressure unit, temperatures in °F or
+°C. Throttle logged in volts is not read as percent; if no fitting channel
+exists, the role is reported missing and the reason is given. A commanded or
+target channel is never used as the wideband. Gauge pressure (psig) is refused,
+because absolute pressure can't be worked out without the atmospheric reading.
+Unitless trims sitting near 1.0 are refused as multipliers.
+
+**λ or EQ.** These run in opposite directions: λ below 1.00 is rich, EQ above
+1.00 is rich. A unit in the header decides it. A name alone does not, because
+HP Tuners' "Equivalence Ratio Commanded" is λ. Without a unit, the app works it
+out from the log:
+
+- the commanded AFR channel moves with λ and against EQ;
+- no PCM commands lean at wide-open throttle;
+- the narrowband O2 sensors read high when the wideband reads rich.
+
+The basis is shown next to the channel. Only with no evidence at all does it
+assume λ, with a warning that every figure inverts if that's wrong.
+
 **Two kinds of row are left out of everything, with a warning:**
 
 - **Rows the PCM never sent.** A logger can keep writing after the key goes

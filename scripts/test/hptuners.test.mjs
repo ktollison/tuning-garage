@@ -118,7 +118,8 @@ console.log("— wideband scale: declared unit outranks the channel name —");
   t(s.scale === "lambda", `unit wins over name (got ${s.scale})`);
   t(!!s.nameConflict, "the disagreement is reported, not hidden");
   t(detectScale("Wideband AFR [AFR]", [14.7]).scale === "afr", "AFR unit respected");
-  t(detectScale("EQ Actual", [1.0]).scale === "eq", "name still used when no unit is declared");
+  t(detectScale("EQ Actual", [1.0]).scale === "ratio-ambiguous", "an EQ name with no unit is ambiguous — decided from the data, never the name");
+  t(detectScale("Equivalence Ratio Commanded", [1.0]).assumedLambda === true, "HP Tuners' SAE “Equivalence Ratio” without a unit is not read as EQ");
 }
 
 console.log("— channels present but silent —");

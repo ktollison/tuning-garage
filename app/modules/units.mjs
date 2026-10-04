@@ -98,7 +98,9 @@ const UNIT_PATTERNS = [
   [/\b(deg\s*)?[°]?\s*F\b|fahrenheit/i, "°F"],
   [/\b(deg\s*)?[°]?\s*C\b|celsius|centigrade/i, "°C"],
   [/\bkpa\b|kilopascal/i, "kPa"],
-  [/\bpsi(a|g)?\b/i, "psi"],
+  // psig is GAUGE pressure — relative to an atmosphere the log does not
+  // record — so it is recognised (below) but never converted to absolute.
+  [/\bpsia?\b(?!\s*g)/i, "psi"],
   [/\bin\.?\s*hg\b|inches\s*hg/i, "inHg"],
   [/\bbar\b/i, "bar"],
   [/\blb\s*\/?\s*min\b|lbs?\/min|pounds?\s*per\s*min/i, "lb/min"],
@@ -111,10 +113,11 @@ const UNIT_PATTERNS = [
 
 // Units we recognise but never convert — knowing them still beats guessing.
 const PASSTHROUGH = [
+  [/\bpsig\b|\bpsi\s*gauge\b/i, "psig"],
   [/\bhz\b|hertz/i, "Hz"], [/\brpm\b/i, "RPM"], [/%|percent/i, "%"],
   [/\bdeg(rees)?\b|[°](?!\s*[FC])/i, "°"], [/\bms\b|millisec/i, "ms"],
   [/\b(volts?|v)\b/i, "V"], [/\bkpa?\/s\b/i, "kPa/s"], [/\bafr\b/i, "AFR"],
-  [/\blambda\b/i, "λ"], [/\bsec(onds?)?\b|\bs\b/i, "s"],
+  [/^λ$|\blambda\b/i, "λ"], [/^(eq|equiv\w*)$/i, "EQ"], [/\bsec(onds?)?\b|\bs\b/i, "s"],
 ];
 
 /**
@@ -128,12 +131,13 @@ export function detectUnit(header) {
   if (!inBrackets) return null;
   const text = inBrackets[1].trim();
   for (const [re, unit] of UNIT_PATTERNS) {
-    if (re.test(text)) return { unit, quantity: quantityOf(unit), convertible: true };
+    if (re.test(text)) return { unit, quantity: quantityOf(unit), convertible: true, known: true };
   }
   for (const [re, unit] of PASSTHROUGH) {
-    if (re.test(text)) return { unit, quantity: null, convertible: false };
+    if (re.test(text)) return { unit, quantity: null, convertible: false, known: true };
   }
-  return { unit: text, quantity: null, convertible: false };  // unknown but stated
+  // stated but not a unit we know — "(wideband)", "(SAE)" are often just names
+  return { unit: text, quantity: null, convertible: false, known: false };
 }
 
 /** The single place a number becomes a string with its unit attached. */
@@ -173,6 +177,9 @@ export function requireUnit(channelUnits, role, quantity, targetUnit, label = ro
   if (!u.unit)
     return { ok: false,
              reason: `${label} (“${u.column ?? role}”) states no unit in its header, so it cannot be used without guessing` };
+  if (u.unit === "psig")
+    return { ok: false,
+             reason: `${label} is gauge pressure (psig), relative to an atmospheric pressure this log does not record — it cannot be converted to absolute without guessing. Log absolute pressure (kPa or psi)` };
   if (quantity && u.quantity !== quantity)
     return { ok: false,
              reason: `${label} is in ${u.unit}, which is not a ${quantity} unit` };

@@ -12,7 +12,10 @@ t(toLambda(0.85, "lambda", 14.7) === 0.85, "lambda passes through");
 console.log("— scale detection —");
 t(detectScale("AFR (wideband)", [14.5, 12.9]).scale === "afr", "AFR named in header");
 t(detectScale("Lambda", [0.98, 1.01]).scale === "lambda", "lambda named in header");
-t(detectScale("EQ Act", [1.02, 0.99]).scale === "eq", "EQ named in header");
+// A name saying EQ does not say which way it runs (SAE calls λ an "equivalence
+// ratio"), so without a unit it is ambiguous and decided from the data.
+t(detectScale("EQ Act", [1.02, 0.99]).scale === "ratio-ambiguous", "EQ in the name alone is ambiguous, not trusted");
+t(detectScale("EQ Act [EQ]", [1.02, 0.99]).scale === "eq", "EQ as a declared unit is trusted");
 t(detectScale("WB O2", [14.2, 13.8]).scale === "afr", "AFR inferred from magnitude");
 const amb = detectScale("WB O2", [0.98, 1.02]);
 t(amb.scale === "ratio-ambiguous" && amb.assumedLambda, "values near 1.0 flagged ambiguous, not silently called EQ");
