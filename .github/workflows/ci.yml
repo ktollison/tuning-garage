@@ -1,8 +1,10 @@
 name: CI
 
-# Public-repo CI. The upstream private repo's workflow also runs the starter-kit
-# export and its personal-data leak sweep; neither exists here, so this is the
-# tests plus the submission guards.
+# CI for the public project AND for every private copy made from it with
+# "Use this template". The tests and smoke test run everywhere. The binary and
+# scrub checks guard what the PUBLIC project accepts; a private copy is
+# supposed to hold your stock read and tune files, so there they are skipped —
+# otherwise your first tune check-in would turn every push red.
 
 on:
   push:
@@ -19,6 +21,7 @@ jobs:
         run: node scripts/test.mjs
 
       - name: No calibration binaries in the tree
+        if: github.repository == 'ktollison/tuning-garage'
         run: |
           if find . -path ./.git -prune -o \( -name '*.bin' -o -name '*.hpt' -o -name '*.hpl' \) -print | grep .; then
             echo "Calibration files must never be committed here — see CONTRIBUTING.md"
@@ -27,6 +30,7 @@ jobs:
           echo "Clean."
 
       - name: Submitted logs are scrubbed
+        if: github.repository == 'ktollison/tuning-garage'
         run: |
           logs=$(find submissions -name '*.csv' 2>/dev/null || true)
           if [ -z "$logs" ]; then echo "No submitted logs."; exit 0; fi

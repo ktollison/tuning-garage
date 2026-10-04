@@ -14,8 +14,8 @@ But several have features worth borrowing (tagged **→ borrow**).
   points, change annotations** — independently validates our core design.
 - **→ borrow:** change annotations per table edit; table comparison; math
   channels + alert rules on logs; AI assistant pattern (BYO-LLM proposing
-  changes that require explicit review — in our system, the assistant + skill
-  already fill this role with the draft-reading rule).
+  changes that require explicit review — here, the draft-reading rule plays
+  that role: nothing is applied without review).
 
 ## TunerStudio (tunerstudio.com — commercial, MegaSquirt ecosystem)
 

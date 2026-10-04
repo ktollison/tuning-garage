@@ -162,6 +162,7 @@ function vh() { return STATE.vehicles.find(v => v.id === VEHICLE); }
 
 function render() {
   $("#ver").textContent = STATE.version ? "v" + STATE.version : "";
+  $("#ver").title = "Tuning Garage version. To update to a new release: node scripts/update.mjs — see the User Guide, section 9.";
   const g = STATE.git;
   $("#gitbar").innerHTML = `
     <span class="dot ${g.dirty || g.behind ? "dirty" : ""}"></span>

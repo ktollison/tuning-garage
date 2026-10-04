@@ -14,6 +14,8 @@ permissions:
 
 jobs:
   validate:
+    # submissions go to the public project only — never run in a private copy
+    if: github.repository == 'ktollison/tuning-garage'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

@@ -22,7 +22,7 @@
   .lede { color:var(--ink2); margin-bottom:26px; }
   h2 { font-size:19px; font-weight:650; margin:34px 0 10px; padding-top:16px; border-top:1px solid var(--grid); }
   h3 { font-size:16px; font-weight:650; margin:22px 0 8px; }
-  p, li { color:var(--ink2); }
+  p, li { color:var(--ink2); margin:8px 0; }
   ul, ol { margin:8px 0 8px 22px; }
   li { margin:4px 0; }
   a { color:var(--accent); }
@@ -32,8 +32,8 @@
   table { width:100%; border-collapse:collapse; margin:12px 0; font-size:14.5px; display:block; overflow-x:auto; }
   th { text-align:left; font-size:12.5px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); padding:6px 12px 6px 0; border-bottom:1px solid var(--grid); }
   td { padding:8px 12px 8px 0; border-bottom:1px solid var(--grid); color:var(--ink2); vertical-align:top; }
-  td:first-child { color:var(--ink); white-space:nowrap; }
-  .callout { background:var(--surface); border:1px solid var(--border); border-left:3px solid var(--accent); border-radius:8px; padding:12px 16px; margin:14px 0; }
+  td:first-child { color:var(--ink); }
+  .callout { background:var(--surface); border:1px solid var(--border); border-left:3px solid var(--accent); border-radius:8px; padding:4px 16px; margin:14px 0; }
   .callout.warn { border-left-color:var(--warn); }
   .dl { display:inline-block; background:var(--accent); color:#fff; text-decoration:none; padding:7px 15px; border-radius:7px; font-size:14.5px; font-weight:550; margin:6px 0; }
   .dl:hover { opacity:.9; }
@@ -46,99 +46,194 @@
 <div class="wrap">
 
 <h1>Windows Setup — Tuning Garage</h1>
-<p class="lede">One-time setup to run the tuning repo and app on a Windows machine. About 15 minutes, most of it waiting on installers. Every link here opens in a new tab, so this page stays where it is.</p>
 
-<h2><span class="step">1</span>Install three tools</h2>
-<p>Install all three before doing anything else. Installer defaults are fine <strong>except where called out</strong> — those choices matter.</p>
+<p class="lede">One-time setup to run the tuning repo + app on a Windows machine. About 15 minutes, most of it waiting on installers. Every link here opens in a new tab, so this page stays where it is.</p>
+
+<h2 id="1-install-three-tools"><span class="step">1</span>Install three tools</h2>
+
+<p>Install all three before doing anything else. Defaults are fine <strong>except where called out below</strong> — those options matter.</p>
 
 <h3>Git for Windows</h3>
+
 <a class="dl" href="https://git-scm.com/download/win" target="_blank" rel="noopener">Download Git for Windows ↗</a>
-<p>The installer asks a lot of questions. Here's what to pick:</p>
+
+<p>the 64-bit standalone installer</p>
+
+<p>The installer asks a lot of questions. What to pick:</p>
+
 <table>
-  <tr><th>Installer screen</th><th>Choose</th><th>Why</th></tr>
+  <tr><th>Installer screen</th><th>What to choose</th><th>Why</th></tr>
   <tr><td>Select Components</td><td>Leave defaults</td><td>—</td></tr>
-  <tr><td><strong>Default editor</strong></td><td><strong>Notepad</strong> (or VS Code)</td><td>The default is Vim, which is notoriously hard to exit if you've never used it</td></tr>
+  <tr><td><strong>Choosing the default editor</strong></td><td><strong>Notepad</strong> (or VS Code if you have it)</td><td>The default is Vim, which is very hard to exit if you've never used it</td></tr>
   <tr><td><strong>Initial branch name</strong></td><td><strong>Override → <code>main</code></strong></td><td>This repo uses <code>main</code></td></tr>
-  <tr><td><strong>Adjusting your PATH</strong></td><td><strong>"Git from the command line and also from 3rd-party software"</strong> (middle option)</td><td>The app runs <code>git</code> itself — this is required</td></tr>
+  <tr><td><strong>Adjusting your PATH</strong></td><td><strong>"Git from the command line and also from 3rd-party software"</strong> (the middle, recommended option)</td><td>The app runs <code>git</code> itself — this is required</td></tr>
   <tr><td>SSH executable</td><td>Bundled OpenSSH</td><td>—</td></tr>
   <tr><td>HTTPS transport</td><td>OpenSSL library</td><td>—</td></tr>
-  <tr><td><strong>Line endings</strong></td><td><strong>"Checkout as-is, commit Unix-style line endings"</strong></td><td>Keeps the Mac launcher script working; avoids whitespace-only diffs between machines</td></tr>
-  <tr><td>Terminal emulator</td><td>Either (MinTTY is default)</td><td>—</td></tr>
-  <tr><td><code>git pull</code> behavior</td><td>Default</td><td>—</td></tr>
-  <tr><td><strong>Credential helper</strong></td><td><strong>Git Credential Manager</strong> (default)</td><td>Required so pushes authenticate without a password prompt</td></tr>
-  <tr><td>Extra options</td><td>Defaults (file system caching on)</td><td>—</td></tr>
+  <tr><td><strong>Line ending conversions</strong></td><td><strong>"Checkout as-is, commit Unix-style line endings"</strong></td><td>Keeps the Mac launcher script working and avoids noisy whitespace-only diffs between machines</td></tr>
+  <tr><td>Terminal emulator</td><td>Either is fine (MinTTY is the default)</td><td>—</td></tr>
+  <tr><td><code>git pull</code> behavior</td><td>Default (fast-forward or merge)</td><td>—</td></tr>
+  <tr><td><strong>Credential helper</strong></td><td><strong>Git Credential Manager</strong> (default)</td><td>Required so pushes authenticate without typing a password</td></tr>
+  <tr><td>Extra options</td><td>Leave defaults (file system caching on)</td><td>—</td></tr>
   <tr><td>Experimental options</td><td>Leave <strong>unchecked</strong></td><td>—</td></tr>
 </table>
 
 <h3>Node.js (LTS)</h3>
-<a class="dl" href="https://nodejs.org" target="_blank" rel="noopener">Download Node.js ↗</a>
-<p>Take the <strong>LTS</strong> button, not "Current".</p>
+
+<a class="dl" href="https://nodejs.org" target="_blank" rel="noopener">Download Node.js (LTS) ↗</a>
+
+<p>the <strong>LTS</strong> button, not "Current".</p>
+
 <table>
-  <tr><th>Installer screen</th><th>Choose</th><th>Why</th></tr>
+  <tr><th>Installer screen</th><th>What to choose</th><th>Why</th></tr>
   <tr><td>Destination folder</td><td>Default</td><td>—</td></tr>
-  <tr><td>Custom Setup</td><td>Leave everything enabled — especially <strong>Add to PATH</strong></td><td>The launcher runs <code>node</code></td></tr>
-  <tr><td><strong>"Tools for Native Modules"</strong></td><td><strong>Leave UNCHECKED</strong></td><td>It installs Chocolatey and Visual Studio build tools (long, ~1&nbsp;GB). This app has zero dependencies and doesn't need them</td></tr>
+  <tr><td>Custom Setup</td><td>Leave everything enabled — especially <strong>"Add to PATH"</strong></td><td>The launcher runs <code>node</code></td></tr>
+  <tr><td><strong>"Tools for Native Modules"</strong> checkbox</td><td><strong>Leave it UNCHECKED</strong></td><td>It installs Chocolatey + Visual Studio build tools (long, ~GB). The app has zero dependencies and doesn't need them</td></tr>
 </table>
 
 <h3>GitHub CLI</h3>
+
 <a class="dl" href="https://cli.github.com" target="_blank" rel="noopener">Download GitHub CLI ↗</a>
-<p>Take the Windows <code>.msi</code>; defaults are fine.</p>
 
-<h3>Check all three installed</h3>
-<p>Open <strong>Command Prompt</strong> (press Start, type <code>cmd</code>, Enter) and run these one at a time — each should print a version number:</p>
-<pre><code>git --version
-node --version
-gh --version</code></pre>
-<div class="callout warn"><strong>"not recognized"?</strong> The PATH option was missed during that tool's installer. Reinstall it and check the PATH row in the tables above.</div>
+<p>(the Windows <code>.msi</code>) — defaults are fine.</p>
 
-<h2><span class="step">2</span>Sign in to GitHub</h2>
+<h3>Check they all installed</h3>
+
+<p>Open <strong>Command Prompt</strong> (press Start, type <code>cmd</code>, Enter) and run these one at a time. Each should print a version number:</p>
+
+<pre><code>git --version</code></pre>
+
+<pre><code>node --version</code></pre>
+
+<pre><code>gh --version</code></pre>
+
+<p>If any says "not recognized", the PATH option was missed during that installer — reinstall it and check the PATH choice above.</p>
+
+<h2 id="2-sign-in-to-github"><span class="step">2</span>Sign in to GitHub</h2>
+
+<p>In Command Prompt:</p>
+
 <pre><code>gh auth login</code></pre>
+
+<p>Answer the prompts:</p>
+
 <ul>
   <li><strong>What account?</strong> → <code>GitHub.com</code></li>
   <li><strong>Preferred protocol?</strong> → <code>HTTPS</code></li>
-  <li><strong>Authenticate Git with your GitHub credentials?</strong> → <strong>Yes</strong> — this is what makes pushing work</li>
-  <li><strong>How to authenticate?</strong> → <code>Login with a web browser</code>, then paste the one-time code into the browser window that opens</li>
+  <li><strong>Authenticate Git with your GitHub credentials?</strong> → <strong><code>Yes</code></strong> (important — this is what lets pushes work)</li>
+  <li><strong>How to authenticate?</strong> → <code>Login with a web browser</code>, then copy the one-time code into the browser window that opens</li>
 </ul>
 
-<h2><span class="step">3</span>Set your commit identity</h2>
-<div class="callout"><strong>Credentials and identity are different things.</strong> Signing in lets you push; identity is the name stamped on each commit. Without it, commits fail.</div>
-<p>Run each line separately — PowerShell does not accept <code>&amp;&amp;</code>:</p>
+<h2 id="3-set-your-commit-identity"><span class="step">3</span>Set your commit identity</h2>
+
+<p>Credentials and identity are two different things — without this, commits fail. Run each line separately:</p>
+
 <pre><code>git config --global user.name "Your Name"</code></pre>
+
 <pre><code>git config --global user.email "you@example.com"</code></pre>
+
 <p>Use the same email as your GitHub account so commits are attributed to you.</p>
 
-<h2><span class="step">4</span>Clone the repo</h2>
-<pre><code>cd %USERPROFILE%\Documents</code></pre>
-<pre><code>gh repo clone YOUR-USERNAME/YOUR-REPO Tuning</code></pre>
-<p>That creates <code>Documents\Tuning</code>.</p>
+<h2 id="4-make-your-own-private-repository"><span class="step">4</span>Make your own <strong>private</strong> repository</h2>
 
-<h2><span class="step">5</span>Run it</h2>
-<p>Double-click <strong><code>start-tuning.cmd</code></strong> in the <code>Tuning</code> folder. It pulls the latest, starts the app, waits for the server to actually respond, then opens <code>http://localhost:4590</code>.</p>
+<div class="callout warn"><p><strong>This repository must be private.</strong> It will hold your calibration files, which contain <strong>your VIN</strong>, along with your datalogs and notes. A public repository publishes all of it, and git keeps the history — deleting a file later does not take it back. Set it private now; do not plan to fix it later.</p></div>
+
+<p><strong>Already have the repo?</strong> (Setting up a second machine.) Skip to <a href="#5-clone-your-repo">step 5</a>.</p>
+
+<div class="callout warn"><p><strong>Do not put this in your Documents folder.</strong> On many PCs Documents is redirected into <strong>OneDrive</strong>, and with Files On-Demand switched on Windows keeps a file's name and size while removing its contents. A background process reading one of those gets an error where Explorer would quietly download it, so your stock read can appear to vanish from the app while being perfectly safe in the cloud. The Mac side of this project hit exactly that with iCloud. <code>%USERPROFILE%\Tuning</code> is outside the synced area.</p><p>Already installed under Documents? If Explorer shows a cloud status column on that folder, move it — the commands below use <code>%USERPROFILE%</code> throughout.</p></div>
+
+<h3>The easy way — in your browser</h3>
+
+<ol>
+  <li>Go to <strong><a href="https://github.com/ktollison/tuning-garage" target="_blank" rel="noopener">https://github.com/ktollison/tuning-garage</a></strong></li>
+  <li>Click the green <strong><code>Use this template</code></strong> button → <strong><code>Create a new repository</code></strong></li>
+  <li>Name it <code>Tuning</code></li>
+  <li><strong>Select <code>Private</code>.</strong> ← the important one</li>
+  <li>Click <strong><code>Create repository</code></strong></li>
+</ol>
+
+<p>That is it. You now own a private copy with none of the starter kit's history attached to it. Then bring it down to your PC:</p>
+
+<pre><code>cd %USERPROFILE%</code></pre>
+
+<pre><code>gh repo clone YOUR-USERNAME/Tuning Tuning</code></pre>
+
+<p>Replace <code>YOUR-USERNAME</code> with your GitHub username.</p>
+
+<h3>The one-command way</h3>
+
+<p>Same result, if you would rather stay in the Terminal:</p>
+
+<pre><code>cd %USERPROFILE%</code></pre>
+
+<pre><code>gh repo create Tuning --private --template ktollison/tuning-garage --clone</code></pre>
+
+<h3>Check it really is private</h3>
+
+<p>Worth ten seconds, because this is the one mistake you cannot take back:</p>
+
+<pre><code>cd Tuning</code></pre>
+
+<pre><code>gh repo view --json isPrivate,nameWithOwner</code></pre>
+
+<p>You want <code>"isPrivate": true</code>. If it says <code>false</code>, fix it <strong>before</strong> you add a single tune file:</p>
+
+<pre><code>gh repo edit --visibility private --accept-visibility-change-consequences</code></pre>
+
+<h2 id="5-clone-your-repo"><span class="step">5</span>Clone your repo</h2>
+
+<p>Only needed on a <strong>second</strong> machine — the first one already has it from step 4.</p>
+
+<pre><code>cd %USERPROFILE%</code></pre>
+
+<pre><code>gh repo clone YOUR-USERNAME/Tuning Tuning</code></pre>
+
+<p>That creates <code>%USERPROFILE%\Tuning</code> — the same repo as on your other machine.</p>
+
+<h2 id="6-run-it"><span class="step">6</span>Run it</h2>
+
+<p>Double-click <strong><code>start-tuning.cmd</code></strong> in the <code>Tuning</code> folder. It pulls the latest, starts the app, waits for the server to actually respond, then opens <a href="http://localhost:4590" target="_blank" rel="noopener">http://localhost:4590</a>.</p>
+
+<p>Tip: right-click <code>start-tuning.cmd</code> → <strong>Send to → Desktop (create shortcut)</strong>.</p>
+
+<p>Leave the black console window open while you use the app — closing it stops the server.</p>
+
+<h2 id="updating-to-a-new-release">Updating to a new release</h2>
+
+<p>Commit &amp; push your work, then in Command Prompt:</p>
+
+<pre><code>cd %USERPROFILE%\Tuning</code></pre>
+
+<pre><code>node scripts/update.mjs</code></pre>
+
+<p>It shows what changed and asks first, never touches your data, and undoes itself if the tests fail. Then press <strong>Commit &amp; push</strong>, and run <code>start-tuning.cmd</code> again so the app restarts on the new version. Your other machines pick it up when they sync. Details, and what to do with any <code>.new</code> file: <a href="USER-GUIDE.md#9-updating-to-a-new-release" target="_blank" rel="noopener">User Guide → Updating</a>.</p>
+
+<h2 id="daily-two-machine-rhythm">Daily two-machine rhythm</h2>
+
+<p>The one rule: <strong>finish on a machine = Commit &amp; push. Start on a machine = the launcher pulls (or hit Sync in the app).</strong></p>
+
 <ul>
-  <li>Handy: right-click <code>start-tuning.cmd</code> → <strong>Send to → Desktop (create shortcut)</strong></li>
-  <li>Leave the black console window open while you work — closing it stops the server</li>
+  <li>The launcher auto-pulls on start; the server also auto-pulls at startup when it's unambiguously safe (clean tree, nothing unpushed).</li>
+  <li>If a machine is behind, the app shows <strong>⇣ N behind GitHub</strong> in orange and warns you — hit <strong>Sync</strong> before doing anything.</li>
+  <li>Tuning tools save files wherever they like; use the app's upload forms to bring tunes and datalogs into the repo with correct names.</li>
 </ul>
 
-<h2>Daily two-machine rhythm</h2>
-<p><strong>Finish on a machine → Commit &amp; push. Start on a machine → the launcher pulls</strong> (or hit Sync in the app).</p>
-<ul>
-  <li>If a machine is behind, the app shows <strong>⇣ N behind GitHub</strong> in orange and warns you — Sync before doing anything.</li>
-  <li>Tuning tools save files wherever they like; use the app's upload forms so files land with correct names.</li>
-</ul>
+<h2 id="troubleshooting">Troubleshooting</h2>
 
-<h2>Troubleshooting</h2>
 <table>
   <tr><th>Symptom</th><th>Cause / fix</th></tr>
-  <tr><td>"Committed and pushed ✓" but changes stay uncommitted</td><td>Old app version — pull and restart; current versions surface the real error</td></tr>
-  <tr><td>"Author identity unknown"</td><td>Step 3 was skipped</td></tr>
+  <tr><td>Commit fails: "Author identity unknown"</td><td>Step 3 was skipped</td></tr>
   <tr><td><code>'&amp;&amp;' is not a valid statement separator</code></td><td>You're in PowerShell — run each command on its own line</td></tr>
-  <tr><td>Browser opens to "can't connect"</td><td>The launcher waits for the server now; if it still happens, wait a moment and refresh</td></tr>
-  <tr><td><code>git</code>/<code>node</code>/<code>gh</code> not recognized</td><td>PATH option missed in that installer — reinstall</td></tr>
-  <tr><td>Push keeps asking for a password</td><td>Re-run <code>gh auth login</code> and answer <strong>Yes</strong> to "Authenticate Git with your GitHub credentials"</td></tr>
+  <tr><td>Browser opens to "can't connect"</td><td>The launcher now waits for the server; if it still happens, give it a moment and refresh</td></tr>
+  <tr><td><code>git</code>/<code>node</code>/<code>gh</code> "not recognized"</td><td>PATH option missed in that installer — reinstall</td></tr>
+  <tr><td>Files listed but unreadable, or a cryptic system error</td><td>OneDrive removed their contents. Right-click the folder -&gt; <strong>Always keep on this device</strong>, or move the repo out of Documents</td></tr>
+  <tr><td>Push rejected / asks for password repeatedly</td><td>Re-run <code>gh auth login</code> and answer <strong>Yes</strong> to "Authenticate Git with your GitHub credentials"</td></tr>
 </table>
 
-<footer>Same content as <code>SETUP-WINDOWS.md</code> — this HTML version exists because GitHub strips new-tab links from Markdown.</footer>
+<h2 id="if-both-machines-edited-without-syncing">If both machines edited without syncing</h2>
 
+<p>The Sync button only fast-forwards (it never merges), so it will refuse and tell you. Fix: on the machine with the newer work, Commit &amp; push; on the other machine run <code>git pull --rebase</code> in the repo folder. Binary tune files can't merge — if the same file ever conflicts, keep both copies under new revision names.</p>
+
+<footer>Generated from SETUP-WINDOWS.md — the same guide, with every link opening in a new tab.</footer>
 </div>
 </body>
 </html>

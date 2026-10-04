@@ -92,7 +92,7 @@ Answer the prompts:
 ## 3. Set your commit identity
 
 Credentials and identity are two different things — without this, commits
-fail. Run each line separately (PowerShell doesn't accept `&&`):
+fail. Run each line separately:
 
 ```bash
 git config --global user.name "Your Name"
@@ -189,7 +189,7 @@ cd %USERPROFILE%
 gh repo clone YOUR-USERNAME/Tuning Tuning
 ```
 
-That creates `Documents\Tuning` — the same repo as on your other machine.
+That creates `%USERPROFILE%\Tuning` — the same repo as on your other machine.
 
 ## 6. Run it
 
@@ -201,6 +201,26 @@ Tip: right-click `start-tuning.cmd` → **Send to → Desktop (create shortcut)*
 
 Leave the black console window open while you use the app — closing it stops
 the server.
+
+---
+
+## Updating to a new release
+
+Commit & push your work, then in Command Prompt:
+
+```bash
+cd %USERPROFILE%\Tuning
+```
+
+```bash
+node scripts/update.mjs
+```
+
+It shows what changed and asks first, never touches your data, and undoes
+itself if the tests fail. Then press **Commit & push**, and run
+`start-tuning.cmd` again so the app restarts on the new version. Your other
+machines pick it up when they sync. Details, and what to do with any `.new`
+file: [User Guide → Updating](USER-GUIDE.md#9-updating-to-a-new-release).
 
 ---
 
@@ -220,7 +240,6 @@ launcher pulls (or hit Sync in the app).**
 
 | Symptom | Cause / fix |
 |---|---|
-| "Committed and pushed ✓" but changes stay uncommitted | Old app version. Pull, restart — current versions surface the real error |
 | Commit fails: "Author identity unknown" | Step 3 was skipped |
 | `'&&' is not a valid statement separator` | You're in PowerShell — run each command on its own line |
 | Browser opens to "can't connect" | The launcher now waits for the server; if it still happens, give it a moment and refresh |

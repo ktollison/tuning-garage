@@ -90,7 +90,7 @@ committed by accident.
 
 ### Open an issue by hand
 
-Use one of the [issue forms](../../issues/new/choose). The log-submission form
+Use one of the [issue forms](https://github.com/ktollison/tuning-garage/issues/new/choose). The log-submission form
 takes a `.csv` directly. Good for a one-off — a maintainer picks it up from
 there.
 
@@ -135,6 +135,12 @@ no CLA to sign; contributions are simply under GPL-3.0, same as the rest.
 
 Work on a branch or a fork and open a pull request. Nothing is merged with red
 CI, least of all anything touching the analysis maths.
+
+## Running your own public copy
+
+Labels for the issue forms and submission alerts are covered in
+[MAINTAINING.md](MAINTAINING.md). Using Tuning Garage for your own car needs
+none of it.
 
 ## Licence
 

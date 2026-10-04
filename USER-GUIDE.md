@@ -50,8 +50,7 @@ The rules it enforces exist because each one has cost somebody something:
 
 ## 3. Install
 
-Ten minutes, three tools: **Git**, **Node.js LTS**, and the **GitHub CLI** (optional
-but recommended for backup).
+About fifteen minutes, three tools: **Git**, **Node.js LTS** and the **GitHub CLI**.
 
 - **Windows** — follow **[SETUP-WINDOWS.md](SETUP-WINDOWS.md)**, which lists every
   installer option that matters (there are several, and the defaults aren't all
@@ -391,25 +390,67 @@ elsewhere. Git is the sync:
 - **Finishing on a machine:** Commit & push.
 - **Starting on a machine:** the launcher pulls, or hit **Sync**.
 - If a machine is behind, the app shows **⇣ N behind GitHub** and warns you.
+- A new release is installed on one machine (section 9); the others get it by
+  syncing.
 
 Sync only fast-forwards; it will never silently merge two divergent histories,
 because binary tune files cannot be merged.
 
 ---
 
-## 9. Sharing this without sharing your data
+## 9. Updating to a new release
+
+"Use this template" made your repository a copy with **no shared history** with
+the project, so `git pull` only ever syncs your own machines. It cannot bring
+you a new release. The update script does that.
+
+**Know when there is one.** Your version is in the app's header. On
+<https://github.com/ktollison/tuning-garage>, click **Watch → Custom →
+Releases** to be told about new ones, or run:
 
 ```bash
-node app/export-template.mjs ../tuning-starter
+node scripts/update.mjs --check
 ```
 
-Produces a clean copy: the app, tests, templates, reference docs, a reset
-progression tracker, sample formulas, and an empty example vehicle. It
-**excludes** your vehicles, tunes, datalogs, sessions, scanner configs, channel
-dictionary, donor files and backlog — and it refuses to finish if a personal
-string or a personal-shaped record survives the sweep. That guard has caught
-real leaks, including four Math Lab formulas that contained no name at all and
-so were invisible to a text search.
+**Update.** On one machine, Commit & push your work first, then in your Tuning
+folder (`cd ~/Tuning` on a Mac, `cd %USERPROFILE%\Tuning` on Windows):
+
+```bash
+node scripts/update.mjs
+```
+
+It shows the release notes and every file it will change, and asks before
+doing anything. Then:
+
+| What | What happens to it |
+|---|---|
+| Your data — `vehicles/`, `PROGRESSION.md`, `data/user-math.json`, `data/preferences.json`, `vcm-scanner/` configs, `definitions/<OS>/` | **Never touched** |
+| A project file you never edited | Replaced with the new version |
+| A project file you edited | The release is merged into your version |
+| An edit that collides with the release | Yours stays; the new version is saved beside it as `<file>.new` |
+
+It then runs the tests. If they pass it commits "Update Tuning Garage to
+x.y.z"; if they fail it undoes every change and tells you. Left with a `.new`
+file? Compare the two, keep what you want, and delete the `.new` file.
+
+**Finish.** Press **Commit & push**. The launcher restarts the app by itself
+when the version changes. Your **other machines** need no update run: the
+launcher pulls the update like any other commit, or press **Sync**.
+
+**Updating from v0.43.0 or earlier?** The script arrived in v0.44.0, so fetch
+it once, then run it as above. On a Mac:
+
+```bash
+curl -fsSL -o scripts/update.mjs https://raw.githubusercontent.com/ktollison/tuning-garage/main/scripts/update.mjs
+```
+
+On Windows (Command Prompt):
+
+```bash
+curl -fsSL -o scripts\update.mjs https://raw.githubusercontent.com/ktollison/tuning-garage/main/scripts/update.mjs
+```
+
+`--to 0.44.0` installs a specific release instead of the newest.
 
 ---
 
@@ -417,12 +458,14 @@ so were invisible to a text search.
 
 | Symptom | Cause |
 |---|---|
-| "Committed and pushed ✓" but changes remain | Old version — pull and restart; current versions surface the real git error |
 | Commit fails: "Author identity unknown" | `git config --global user.name` / `user.email` were never set |
 | `'&&' is not a valid statement separator` | PowerShell — run each command on its own line |
 | Browser opens to "can't connect" | The launcher waits for the server; if it persists, wait and refresh |
 | Analysis says most rows were filtered | Usually correct. Check the rejection table: cold, open loop, PE, or transient |
-| A Celsius log analysed as all-cold | Fixed in v0.17.0 — pull |
+| Update says "You have uncommitted changes" | Commit & push first, then run it again |
+| Update says "Could not reach the project" | No internet, or GitHub is down — try again later |
+| Update says the tests failed | Nothing was changed. Report it on [Discussions](https://github.com/ktollison/tuning-garage/discussions) |
+| The header still shows the old version after updating | Restart the app: run the launcher again |
 | Bin analysis says "no platform module recognises this file" | Not a Gen III GM bin, or a partial read. A P01 full read is exactly 524,288 bytes |
 | Compare shows byte counts but no tables | No XDF for that OS in `definitions/<OS>/` |
 

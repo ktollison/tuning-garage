@@ -23,8 +23,9 @@ permissions:
 jobs:
   alert:
     runs-on: ubuntu-latest
-    # Only submissions. Ordinary bug reports are not worth a phone buzz.
-    if: contains(join(github.event.issue.labels.*.name, ','), 'submission')
+    # Only submissions, and only on the public project. Ordinary bug reports
+    # are not worth a phone buzz, and a private copy has no submissions.
+    if: github.repository == 'ktollison/tuning-garage' && contains(join(github.event.issue.labels.*.name, ','), 'submission')
     steps:
       - uses: actions/checkout@v4
 

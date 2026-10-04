@@ -179,7 +179,7 @@ whether the port actually answers. The useful failure is when those disagree.
 
 **One thing worth knowing:** the agent keeps a single process alive, and pulling
 new code does not touch it — so the app can carry on serving the previous build
-indefinitely. `status` now checks for this and says so:
+indefinitely. `status` checks for this and says so:
 
 ```
 STALE: serving v0.31.0, but the code on disk is v0.31.3.
@@ -193,57 +193,20 @@ always safe to run.
 The app binds to **127.0.0.1 only** — nothing is exposed to your network — and
 has zero dependencies.
 
-### Setting up the public repository (maintainers only)
+---
 
-Issue forms can only apply labels that **already exist**. If they do not, the
-form still works and the issue is still created — with no label at all, so the
-alert workflow never fires and nothing errors. Create them first:
+## Updating to a new release
 
-```bash
-node scripts/setup-labels.mjs
-```
-
-Safe to re-run: it creates what is missing, corrects a colour or description
-that has drifted, and does nothing when everything already matches.
-`--check` reports without changing anything, for a fresh box or CI.
-
-### Alerts when someone submits (maintainers only)
-
-Only useful if you run the public project. Two paths, deliberately overlapping:
+Commit & push your work, then in `~/Tuning`:
 
 ```bash
-sh scripts/autostart-macos.sh watch-install
+node scripts/update.mjs
 ```
 
-That polls the public repo every 15 minutes and pushes a notification for
-anything new. It catches **fork pull requests**, which the GitHub Actions alert
-cannot — GitHub withholds secrets from fork workflows by design, and a fork PR
-is exactly how a git-literate contributor submits.
-
-Alerts need a Pushover application token and user key in
-`~/.config/tuning-garage/pushover.env`:
-
-```bash
-mkdir -p ~/.config/tuning-garage && chmod 700 ~/.config/tuning-garage
-```
-
-```bash
-printf 'PUSHOVER_TOKEN=your-app-token\nPUSHOVER_USER=your-user-key\n' > ~/.config/tuning-garage/pushover.env
-```
-
-```bash
-chmod 600 ~/.config/tuning-garage/pushover.env
-```
-
-The token never goes in the repository. Without that file the poller still runs
-and simply sends nothing, so this is safe to install before setting it up.
-Test it with:
-
-```bash
-bash scripts/notify-pushover.sh --title "Tuning Garage" --message "alerting works"
-```
-
-Remove with `sh scripts/autostart-macos.sh watch-uninstall`.
+It shows what changed and asks first, never touches your data, and undoes
+itself if the tests fail. Then press **Commit & push**; your other machines
+pick it up when they sync. Details, and what to do with any `.new` file:
+[User Guide → Updating](USER-GUIDE.md#9-updating-to-a-new-release).
 
 ---
 
@@ -269,7 +232,7 @@ If you tune on Windows and research on the Mac:
 | Commit says it worked but nothing changed | `git config --global user.email` is unset — see step 3 |
 | Port 4590 already in use | Something else is on it: `lsof -nP -iTCP:4590 -sTCP:LISTEN`. Or run on another port: `PORT=4700 node app/server.mjs` |
 | App will not start after a pull | `node --version` — must be 18+ |
-| App is running old code after a pull | `./start-tuning.sh` — it detects the mismatch and restarts. Or `sh scripts/autostart-macos.sh restart` |
+| App is running old code after a pull or update | `./start-tuning.sh` — it detects the mismatch and restarts. Or `sh scripts/autostart-macos.sh restart` |
 | Files listed but unreadable, or `Unknown system error -11` | iCloud evicted their contents. `brctl download <path>` restores them; move the repo out of `~/Documents` so it stops happening |
 | Agent loaded but the port does not answer | Read `logs/app.err.log`; launchd runs with a minimal `PATH`, so re-run `install` if you changed how Node is installed |
 

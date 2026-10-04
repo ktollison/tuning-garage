@@ -21,7 +21,7 @@ import { detectUnit, convert, DEFAULT_PREFERENCES, QUANTITIES } from "./modules/
 import * as scanner from "./modules/vcmscanner.mjs";
 
 const execFileP = promisify(execFile);
-const APP_VERSION = "0.43.0"; // keep in step with CHANGELOG.md — CI enforces the match
+const APP_VERSION = "0.44.0"; // keep in step with CHANGELOG.md — CI enforces the match
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(process.env.TUNING_REPO || path.join(__dirname, ".."));
 const PUBLIC = path.join(__dirname, "public");
@@ -1314,8 +1314,8 @@ async function handleApi(req, res, url) {
     const b = await jsonBody();
     if (b.action === "commit-push") {
       await git("add", "-A");
-      const msg = (b.message || "app: update").slice(0, 200) +
-        "\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>";
+      // the commit is the user's own work — no trailer attributes it to anyone else
+      const msg = (b.message || "app: update").slice(0, 200);
       const commit = await git("commit", "-m", msg);
       // a failed commit must never masquerade as success: push says
       // "Everything up-to-date" even when the commit silently failed
