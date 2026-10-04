@@ -83,18 +83,24 @@ export function makeEval(equation) {
   if (!equation) return x => x;
   const tokens = equation.match(/\d*\.?\d+(?:[eE][+-]?\d+)?|[A-Za-z_]\w*|[()+\-*/^]/g);
   if (!tokens) return x => x;
-  const prec = { "+": 1, "-": 1, "*": 2, "/": 2, "^": 3 };
+  // "neg" is unary minus. It used to be written as "0 - …", which broke after
+  // * or /: X*-2 became (X*0)-2 = -2 instead of -6, and X/-4 divided by zero.
+  // ^ and neg bind right to left (2^3^2 = 2^9, not 8^2).
+  const prec = { "+": 1, "-": 1, "*": 2, "/": 2, neg: 3, "^": 4 };
+  const rightAssoc = new Set(["^", "neg"]);
   const out = [], ops = [];
   let prev = null;
-  for (const t of tokens) {
+  for (let t of tokens) {
     if (/^\d|^\./.test(t)) { out.push(parseFloat(t)); }
     else if (/^[A-Za-z_]/.test(t)) { out.push({ v: t.toUpperCase() }); }
     else if (t === "(") ops.push(t);
     else if (t === ")") { while (ops.length && ops.at(-1) !== "(") out.push(ops.pop()); ops.pop(); }
     else {
-      // unary minus
-      if (t === "-" && (prev === null || prev === "(" || prec[prev])) { out.push(0); }
-      while (ops.length && ops.at(-1) !== "(" && prec[ops.at(-1)] >= prec[t]) out.push(ops.pop());
+      const unary = (t === "-" || t === "+") && (prev === null || prev === "(" || prec[prev]);
+      if (unary && t === "+") { prev = t; continue; }        // unary plus does nothing
+      if (unary) t = "neg";
+      while (ops.length && ops.at(-1) !== "(" &&
+             (rightAssoc.has(t) ? prec[ops.at(-1)] > prec[t] : prec[ops.at(-1)] >= prec[t])) out.push(ops.pop());
       ops.push(t);
     }
     prev = t;
@@ -106,6 +112,7 @@ export function makeEval(equation) {
     for (const t of out) {
       if (typeof t === "number") st.push(t);
       else if (typeof t === "object") st.push(x);
+      else if (t === "neg") st.push(-(st.pop() ?? NaN));
       else {
         const b = st.pop(), a = st.pop() ?? 0;
         // Division by zero is undefined, not zero. Returning 0 made a scaling
@@ -185,7 +192,7 @@ export function parseXdf(text) {
       id: c.attrs.uniqueid || "", title: txt(c, "title"), units: txt(c, "units"),
       address: rawAddr === null ? null : (subtract ? rawAddr - baseOffset : rawAddr + baseOffset),
       bits: Number(ed?.attrs?.mmedelementsizebits || 16),
-      signed: !!(flags & 0x01), lsbFirst: !!(flags & 0x02),
+      signed: !!(flags & 0x01), lsbFirst: !!(flags & 0x02), floating: !!(flags & 0x10000),
       equation: kid(c, "MATH")?.attrs?.equation || "",
     };
   });
@@ -200,9 +207,17 @@ export function parseXdf(text) {
 }
 
 // ---------- reading values out of a bin ----------
-function readCell(buf, off, bits, signed, lsbFirst) {
+// Floating-point cells (flag 0x10000) are IEEE 754 and must be decoded as such:
+// read as integers, a 1.5 came out as 1069547520. Only 32- and 64-bit floats
+// exist; any other float width is reported as unreadable rather than guessed.
+function readCell(buf, off, bits, signed, lsbFirst, floating = false) {
   const bytes = bits / 8;
   if (off < 0 || off + bytes > buf.length) return null;
+  if (floating) {
+    if (bits === 32) return lsbFirst ? buf.readFloatLE(off) : buf.readFloatBE(off);
+    if (bits === 64) return lsbFirst ? buf.readDoubleLE(off) : buf.readDoubleBE(off);
+    return null;
+  }
   let v = 0;
   if (lsbFirst) for (let i = bytes - 1; i >= 0; i--) v = (v << 8) | buf[off + i];
   else for (let i = 0; i < bytes; i++) v = (v << 8) | buf[off + i];
@@ -223,7 +238,7 @@ export function readTable(buf, table) {
   for (let r = 0; r < rows; r++) {
     const vr = [], rr = [];
     for (let c = 0; c < cols; c++) {
-      const raw = readCell(buf, z.address + r * rowStride + c * colStride, z.bits, z.signed, z.lsbFirst);
+      const raw = readCell(buf, z.address + r * rowStride + c * colStride, z.bits, z.signed, z.lsbFirst, z.floating);
       rr.push(raw);
       vr.push(raw === null ? null : +f(raw).toFixed(z.decimals ?? 2));
     }
@@ -236,7 +251,7 @@ export function readTable(buf, table) {
     const n = ax.indexCount || (ax === table.x ? cols : rows);
     const g = makeEval(ax.equation), ab = ax.bits / 8;
     return Array.from({ length: n }, (_, i) => {
-      const raw = readCell(buf, ax.address + i * ab, ax.bits, ax.signed, ax.lsbFirst);
+      const raw = readCell(buf, ax.address + i * ab, ax.bits, ax.signed, ax.lsbFirst, ax.floating);
       return raw === null ? null : +g(raw).toFixed(ax.decimals ?? 2);
     });
   };

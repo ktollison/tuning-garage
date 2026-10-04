@@ -116,5 +116,40 @@ console.log("— --check never writes —");
   t(/1ZZTEST99Z1234567/.test(fs.readFileSync(f, "utf8")), "the input is left untouched");
 }
 
+console.log("— dropping a column keeps the names aligned when a name holds commas —");
+{
+  // The AEM channel's name carries its part numbers, commas included. The names
+  // row was skipped while every other row was cut, shifting names against data.
+  const f = write("aem-gps.csv", `HP Tuners CSV Log File
+Version: 1.0
+
+[Channel Information]
+0,12,40001,9
+Offset,Engine RPM (SAE),MPVI2.1 -> AEM 30-(03x0,2340,5130),GPS Latitude
+s,rpm,,deg
+
+[Channel Data]
+0.0,800,14.7,45.1
+0.5,810,14.6,45.2
+`);
+  scrub([f]);
+  const out = fs.readFileSync(f.replace(/\.csv$/, ".scrubbed.csv"), "utf8");
+  t(!/Latitude|45\.1/.test(out), "the GPS column is gone");
+  const r = analyze(out);
+  const aem = r.headers.findIndex(h => h.includes("AEM 30-(03x0,2340,5130)"));
+  t(r.headers.length === 3 && aem === 2, `three columns left, the AEM name intact in column 3 (${r.headers.join(" | ")})`);
+  t(/^MPVI2\.1 -> AEM 30-\(03x0,2340,5130\)$/m.test(out.split("\n").find(l => l.startsWith("Offset")).split(",").slice(2).join(",")),
+    "the names row is byte-identical apart from the removed column");
+}
+
+console.log("— the submission tool refuses a VIN in the file name —");
+{
+  const f = write("1G1YY22G0X5123456-log.csv", "a,b\n1,2\n");
+  let code = 0, out = "";
+  try { out = execFileSync(process.execPath, [path.join(REPO, "scripts/submit-log.mjs"), f, "--dry-run"], { encoding: "utf8", stdio: "pipe" }); }
+  catch (e) { code = e.status; out = (e.stdout || "") + (e.stderr || ""); }
+  t(code === 1 && /looks like it contains a VIN/.test(out), "refused before anything is built — the name would go in the public title");
+}
+
 await fsp.rm(TMP, { recursive: true, force: true });
 console.log("\nscrub-log tests done");

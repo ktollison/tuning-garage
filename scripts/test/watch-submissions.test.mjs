@@ -35,14 +35,14 @@ esac
 `, { mode: 0o755 });
 };
 
-const run = (args = []) => new Promise(resolve => {
+const run = (args = [], extraEnv = {}) => new Promise(resolve => {
   const out = [];
   const p = spawn(process.execPath, [path.join(REPO, "scripts/watch-submissions.mjs"), ...args], {
     stdio: ["ignore", "pipe", "pipe"],
     env: { ...process.env, PATH: `${BIN}:${process.env.PATH}`,
            TUNING_STATE_DIR: path.join(TMP, "state"),
            // point the notifier at a config that does not exist -> it no-ops
-           TUNING_PUSHOVER_ENV: path.join(TMP, "absent.env") },
+           TUNING_PUSHOVER_ENV: path.join(TMP, "absent.env"), ...extraEnv },
   });
   p.stdout.on("data", d => out.push(d)); p.stderr.on("data", d => out.push(d));
   p.on("close", code => resolve({ code, out: Buffer.concat(out).toString() }));
@@ -114,6 +114,18 @@ console.log("— dry run writes no state —");
   t(!fs.existsSync(path.join(TMP, "state", "last-announced.json")), "no state file after a dry run");
   const real = await run();
   t(/new issue #99\b/.test(real.out), "so the real run still announces it");
+}
+
+console.log("— a failed alert is retried, not swallowed —");
+{
+  await fsp.rm(path.join(TMP, "state"), { recursive: true, force: true });
+  await writeGh([issue(10), issue(11)], []);
+  const failing = path.join(TMP, "fail-notifier.sh");
+  await fsp.writeFile(failing, "#!/bin/bash\necho 'notifier down' >&2\nexit 1\n", { mode: 0o755 });
+  const down = await run([], { TUNING_NOTIFIER: failing });
+  t(down.code !== 0 && /FAILED \(will retry\)/.test(down.out), "the run reports the failure");
+  const back = await run();
+  t(/new issue #10\b/.test(back.out) && /new issue #11\b/.test(back.out), "and the next run announces both again");
 }
 
 await fsp.rm(TMP, { recursive: true, force: true });

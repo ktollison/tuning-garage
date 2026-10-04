@@ -61,9 +61,10 @@ export function analyze(buf) {
     sha256: crypto.createHash("sha256").update(buf).digest("hex"),
     sizeBytes: buf.length,
     warnings,
-    // Algorithm faithfully ported from PCMBinBuilder but not yet validated
-    // against this user's real reads — treat results as draft readings.
-    note: "Extracted values are draft readings — verify against your tools. Checksum math ported from PCMBinBuilder; pending validation against a real stock read.",
+    // Ported from PCMBinBuilder and confirmed on two real P01 full reads (every
+    // checksum verifies; a single flipped byte is caught). P59 has not been
+    // checked against a real read.
+    note: "Extracted values are draft readings — verify against your tools. Checksum maths verified on real P01 full reads; P59 support has not yet been checked against a real read.",
   };
 
   if (buf.length !== SIZE_P01 && buf.length !== SIZE_P59) {

@@ -6,7 +6,7 @@
 # runs on a Mac as an ordinary user rather than as root under systemd, so there
 # is no journalctl fallback and no root-owned /etc path.
 #
-#   sh scripts/notify-pushover.sh --title "..." --message "..." [--priority N]
+#   bash scripts/notify-pushover.sh --title "..." --message "..." [--priority N]
 #                                 [--url URL] [--url-title TEXT] [--monospace]
 #
 # SECRETS. The token and user key go in via `curl --config -` (stdin), never on

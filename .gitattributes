@@ -5,3 +5,14 @@
 *.tun binary
 *.xdf -text
 *.csv -text
+
+# cmd.exe misreads batch files with LF-only endings: label lookups for goto can
+# fail depending on where a label falls in the file, and the launcher is built
+# on goto. Stored as LF like everything else; checked out with CRLF everywhere.
+*.cmd text eol=crlf
+
+# The app parses its markdown and JSON line by line. A CRLF checkout (Git for
+# Windows' default) left "\r" on every table row, and nothing matched: an empty
+# progression tracker, every revision "never flashed". LF on every machine.
+*.md text eol=lf
+*.json text eol=lf

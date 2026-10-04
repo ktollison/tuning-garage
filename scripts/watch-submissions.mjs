@@ -33,13 +33,16 @@ const STATE_DIR = process.env.TUNING_STATE_DIR
 const STATE_FILE = path.join(STATE_DIR, "last-announced.json");
 const dryRun = process.argv.includes("--dry-run");
 
+// Returns whether the alert went out. TUNING_NOTIFIER swaps in a stand-in for tests.
+const NOTIFIER = process.env.TUNING_NOTIFIER || path.join(REPO, "scripts/notify-pushover.sh");
 const notify = (title, message, url) => {
-  if (dryRun) { console.log(`  [dry-run] would alert: ${title}`); return; }
+  if (dryRun) { console.log(`  [dry-run] would alert: ${title}`); return true; }
   try {
-    execFileSync("bash", [path.join(REPO, "scripts/notify-pushover.sh"),
+    execFileSync("bash", [NOTIFIER,
       "--title", title, "--message", message, "--url", url, "--url-title", "Open on GitHub"],
       { stdio: "inherit" });
-  } catch { console.error("  alert failed — see the output above"); }
+    return true;
+  } catch { console.error("  alert failed — see the output above; it will be retried next run"); return false; }
 };
 
 let gh;
@@ -75,18 +78,25 @@ if (fs.existsSync(STATE_FILE)) {
 const fresh = items.filter(isSubmission).filter(x => x.number > (state[x.kind] || 0));
 if (!fresh.length) { console.log(`watch-submissions: nothing new (last seen issue #${state.issue}, pr #${state.pr})`); process.exit(0); }
 
+const failed = [];
 for (const x of fresh.sort((a, b) => a.number - b.number)) {
   const who = x.author?.login || "someone";
   console.log(`  new ${x.kind} #${x.number} by ${who}: ${x.title}`);
-  notify(`Tuning Garage: new ${x.kind === "pr" ? "pull request" : "submission"} #${x.number}`,
-         `${x.title}\nfrom ${who}`, x.url);
+  if (!notify(`Tuning Garage: new ${x.kind === "pr" ? "pull request" : "submission"} #${x.number}`,
+              `${x.title}\nfrom ${who}`, x.url)) failed.push(x);
 }
 
-// Advance the marks only after alerting, so a crash mid-run re-announces rather
-// than silently swallowing a submission.
-for (const x of fresh) state[x.kind] = Math.max(state[x.kind] || 0, x.number);
+// Advance the marks only past what was actually announced. A failed alert used
+// to advance them anyway — that submission was then never announced at all.
+// Each mark stops just short of its first failure, so the next run retries it.
+for (const kind of ["issue", "pr"]) {
+  const firstFail = Math.min(...failed.filter(x => x.kind === kind).map(x => x.number));
+  const ok = fresh.filter(x => x.kind === kind && x.number < firstFail).map(x => x.number);
+  if (ok.length) state[kind] = Math.max(state[kind] || 0, ...ok);
+}
 if (!dryRun) {
   await fsp.mkdir(STATE_DIR, { recursive: true });
   await fsp.writeFile(STATE_FILE, JSON.stringify(state, null, 2) + "\n");
 }
-console.log(`watch-submissions: ${fresh.length} announced; marks now issue #${state.issue}, pr #${state.pr}`);
+console.log(`watch-submissions: ${fresh.length - failed.length} announced${failed.length ? `, ${failed.length} FAILED (will retry)` : ""}; marks now issue #${state.issue}, pr #${state.pr}`);
+if (failed.length) process.exitCode = 1;

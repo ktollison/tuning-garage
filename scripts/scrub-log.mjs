@@ -18,7 +18,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { parseCsv } from "../app/modules/loganalysis.mjs";
+import { parseCsv, rejoinNames } from "../app/modules/loganalysis.mjs";
 
 const args = process.argv.slice(2);
 const check = args.includes("--check");
@@ -70,13 +70,18 @@ for (const file of files) {
   if (drop.length) {
     findings.push(`${drop.length} locating channel(s): ${drop.map(i => parsed.headers[i]).join(", ")}`);
     const kill = new Set(drop);
-    const cut = line => line.split(",").filter((_, i) => !kill.has(i)).join(",");
-    // Only touch rows that have the full column count — the channel-info rows
-    // and the data rows. Prose lines in the preamble are left alone.
     const width = parsed.headers.length;
-    text = text.split("\n")
-      .map(l => (l.split(",").length === width ? cut(l) : l))
-      .join("\n");
+    // Rows with the full column count are cut field by field. The channel-name
+    // row can have MORE fields — "MPVI2.1 -> AEM 30-(03x0,2340,5130)" holds
+    // commas — and used to be skipped while every other row was cut, shifting
+    // the names against the data. Regroup it exactly as the parser does, then
+    // cut by column. Prose in the preamble matches neither and is left alone.
+    const cut = line => {
+      const f = line.split(",");
+      const cols = f.length === width ? f : f.length > width ? rejoinNames(f, width) : null;
+      return cols && cols.length === width ? cols.filter((_, i) => !kill.has(i)).join(",") : line;
+    };
+    text = text.split("\n").map(cut).join("\n");
   }
 
   const rel = path.basename(file);

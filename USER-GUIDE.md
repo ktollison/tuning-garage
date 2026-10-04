@@ -87,8 +87,9 @@ That installs a launchd agent which relaunches the server if it exits. Check it
 with `sh scripts/autostart-macos.sh status`, which tells you both whether the
 agent is loaded and whether the port is answering. Remove it with `uninstall`.
 
-The app binds to localhost only and has **zero dependencies** — no `npm
-install`, nothing phoning home. Your data stays in your own git repo.
+The app binds to localhost only, refuses requests from other websites, and has
+**zero dependencies** — no `npm install`, nothing phoning home. Your data stays
+in your own git repo.
 
 ---
 

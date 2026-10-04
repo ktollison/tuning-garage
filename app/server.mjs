@@ -15,13 +15,13 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import crypto from "node:crypto";
 import { analyzeBuffer } from "./modules/index.mjs";
-import { analyze as analyzeLog, FUELS } from "./modules/loganalysis.mjs";
+import { analyze as analyzeLog, FUELS, parseCsv, normalizeTime } from "./modules/loganalysis.mjs";
 import { parseXdf, readTable, diffTables } from "./modules/xdf.mjs";
 import { detectUnit, convert, DEFAULT_PREFERENCES, QUANTITIES } from "./modules/units.mjs";
 import * as scanner from "./modules/vcmscanner.mjs";
 
 const execFileP = promisify(execFile);
-const APP_VERSION = "0.44.0"; // keep in step with CHANGELOG.md — CI enforces the match
+const APP_VERSION = "0.45.0"; // keep in step with CHANGELOG.md — CI enforces the match
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(process.env.TUNING_REPO || path.join(__dirname, ".."));
 const PUBLIC = path.join(__dirname, "public");
@@ -70,6 +70,32 @@ function safeJoin(root, rel) {
   if (p !== root && !p.startsWith(root + path.sep)) throw new Error("path escapes repo");
   return p;
 }
+
+// A file the server writes must land in the folder it was meant for. safeJoin
+// keeps paths inside the repo; this keeps them inside one directory, so a
+// crafted name can never climb out of datalogs/ into somewhere else.
+function inside(dir, name) {
+  const p = path.resolve(dir, name);
+  if (path.dirname(p) !== path.resolve(dir)) throw new Error("file name escapes its folder");
+  return p;
+}
+
+// Request values that end up in file names are validated, never trusted.
+// Unchecked, `date=../../../../tmp/x` on an upload wrote outside the repo.
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const REV_RE = /^v\d{3}$/;
+const EXT_RE = /^\.[a-z0-9]{1,10}$/;
+const badInput = msg => Object.assign(new Error(msg), { status: 400 });
+function validDate(d) { if (d == null || d === "") return today(); if (!DATE_RE.test(d)) throw badInput("date must look like YYYY-MM-DD"); return d; }
+function validRev(r, { allowStock = false } = {}) {
+  if (REV_RE.test(r || "") || (allowStock && r === "stock")) return r;
+  throw badInput(`revision must look like v001${allowStock ? " (or stock)" : ""}`);
+}
+
+// Markdown the app parses is read with LF endings whatever the checkout used.
+// On a CRLF checkout every table row ended in "\r", so no progression row and
+// no flash-log row matched: an empty tracker, and every revision "never flashed".
+async function readText(file) { return (await fsp.readFile(file, "utf8")).replace(/\r\n/g, "\n"); }
 
 function slug(s) {
   return String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "untitled";
@@ -161,7 +187,7 @@ async function syncCounts() {
 const STATUSES = ["⬜", "🟡", "🟢"];
 
 async function readProgression() {
-  const text = await fsp.readFile(path.join(REPO, "PROGRESSION.md"), "utf8");
+  const text = await readText(path.join(REPO, "PROGRESSION.md"));
   const stages = [];
   const milestones = [];
   let current = null;
@@ -181,7 +207,7 @@ async function readProgression() {
 
 async function updateProgression({ concept, status, notes, milestone, done }) {
   const file = path.join(REPO, "PROGRESSION.md");
-  let text = await fsp.readFile(file, "utf8");
+  let text = await readText(file);
   if (concept !== undefined) {
     if (!STATUSES.includes(status)) throw new Error("bad status");
     const lines = text.split("\n");
@@ -260,7 +286,7 @@ async function buildTimeline(id) {
   // the car. Absent is fine (nothing flashed yet); unreadable is not.
   let flashLogReadable = true;
   try {
-    const text = await fsp.readFile(path.join(base, "flash-log.md"), "utf8");
+    const text = await readText(path.join(base, "flash-log.md"));
     for (const line of text.split("\n")) {
       const m = line.match(/^\|\s*(\d{4}-\d{2}-\d{2})\s*\|\s*([^|]+?)\s*\|\s*([^|]*?)\s*\|\s*([^|]*?)\s*\|$/);
       if (!m) continue;
@@ -302,7 +328,7 @@ async function buildTimeline(id) {
 // markdown and the app's checklist changes with it.
 
 async function readChecklist() {
-  const text = await fsp.readFile(path.join(REPO, "templates", "pre-flash-checklist.md"), "utf8");
+  const text = await readText(path.join(REPO, "templates", "pre-flash-checklist.md"));
   const sections = [];
   const seen = new Set();
   let current = null, lastItem = null;
@@ -340,7 +366,7 @@ async function readChecklist() {
 // handles table rows and cannot be reused here.
 async function updateVehicleBullet(vehicleDir, label, value) {
   const file = path.join(vehicleDir, "vehicle.md");
-  let text = await fsp.readFile(file, "utf8");
+  let text = await readText(file);
   const re = new RegExp(`^- ${label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}: .*$`, "m");
   if (!re.test(text)) throw new Error(`bullet not found in vehicle.md: ${label}`);
   text = text.replace(re, `- ${label}: ${String(value).replace(/\n/g, " ")}`);
@@ -373,11 +399,15 @@ async function vehicleState(id) {
   const stock = await list(path.join(tunesDir, "stock"), { withHash: true });
   const datalogs = await list(path.join(base, "datalogs"));
   const sessions = await list(path.join(base, "sessions"));
-  let changelog = "", profile = "";
-  try { changelog = await fsp.readFile(path.join(tunesDir, "CHANGELOG.md"), "utf8"); } catch {}
-  try { profile = await fsp.readFile(path.join(base, "vehicle.md"), "utf8"); } catch {}
-  let flashLog = "";
-  try { flashLog = await fsp.readFile(path.join(base, "flash-log.md"), "utf8"); } catch {}
+  // Absent is normal; unreadable is not. An unreadable vehicle.md used to read
+  // as an empty profile — "nothing flashed" about a car that has been.
+  const text = async file => {
+    try { return await readText(file); }
+    catch (e) { if (e.code !== "ENOENT") errors.push(await describeReadError(file, e)); return ""; }
+  };
+  const changelog = await text(path.join(tunesDir, "CHANGELOG.md"));
+  const profile = await text(path.join(base, "vehicle.md"));
+  const flashLog = await text(path.join(base, "flash-log.md"));
   return { id, tunes: tunes ?? [], stock: stock ?? [], datalogs: datalogs ?? [],
            sessions: sessions ?? [], readErrors: errors,
            changelog, profile, flashLog, ...parseCurrentState(profile) };
@@ -437,11 +467,18 @@ async function readDocs() {
 async function readDefinitions() {
   const dir = path.join(REPO, "definitions");
   const out = [];
-  try {
-    for (const e of await fsp.readdir(dir, { withFileTypes: true })) {
-      if (e.isDirectory()) out.push({ osId: e.name, files: await listFiles(path.join(dir, e.name)) });
-    }
-  } catch {}
+  let entries;
+  try { entries = await fsp.readdir(dir, { withFileTypes: true }); }
+  catch (e) {
+    if (e.code === "ENOENT") return out;
+    // an unreadable library is not an empty one
+    return [{ osId: "(unreadable)", files: [], error: await describeReadError(dir, e) }];
+  }
+  for (const e of entries) {
+    if (!e.isDirectory()) continue;
+    try { out.push({ osId: e.name, files: await listFiles(path.join(dir, e.name)) }); }
+    catch (err) { out.push({ osId: e.name, files: [], error: err.message }); }
+  }
   return out.sort((a, b) => a.osId.localeCompare(b.osId));
 }
 
@@ -693,10 +730,11 @@ async function handleApi(req, res, url) {
 
   // ----- upload (raw body; metadata in query) -----
   if (req.method === "POST" && url.pathname === "/api/upload") {
-    const vehicle = q.get("vehicle"), kind = q.get("kind"), orig = q.get("name") || "file.bin";
+    const vehicle = q.get("vehicle"), kind = q.get("kind"), orig = path.basename(q.get("name") || "file.bin");
     const ext = path.extname(orig).toLowerCase() || ".bin";
+    if (!EXT_RE.test(ext)) return send(400, { error: `unsupported file extension: ${ext}` });
     const desc = slug(q.get("desc"));
-    const date = q.get("date") || today();
+    const date = validDate(q.get("date"));
 
     // A Math Lab parameter uploaded from the User Math tab: the XML is kept as
     // the loadable scanner artifact AND an entry is created here, since that's
@@ -709,7 +747,7 @@ async function handleApi(req, res, url) {
         return send(400, { error: "that isn't a Math Lab parameter — expected a .MathParameter.xml export" });
       const dir = safeJoin(REPO, path.join("vcm-scanner", "math"));
       await fsp.mkdir(dir, { recursive: true });
-      const dest = path.join(dir, path.basename(orig));
+      const dest = inside(dir, orig);
       await fsp.writeFile(dest, body);
 
       const { dictionary, unitCodes } = await readScanner();
@@ -734,7 +772,7 @@ async function handleApi(req, res, url) {
       const folder = SCAN_FOLDERS[type];
       const dir = safeJoin(REPO, path.join("vcm-scanner", folder));
       await fsp.mkdir(dir, { recursive: true });
-      const dest = path.join(dir, path.basename(orig));
+      const dest = inside(dir, orig);
       const existed = fs.existsSync(dest);
       await fsp.writeFile(dest, body);
       // record metadata so the platform filter has something to work with
@@ -772,7 +810,7 @@ async function handleApi(req, res, url) {
       if (!body.length) return send(400, { error: "empty upload" });
       const ddir = safeJoin(REPO, path.join("definitions", osid));
       await fsp.mkdir(ddir, { recursive: true });
-      const dest = path.join(ddir, path.basename(orig));
+      const dest = inside(ddir, orig);
       await fsp.writeFile(dest, body);
       // every OS folder gets a SOURCES.md scaffold — provenance matters for community XDFs
       const sources = path.join(ddir, "SOURCES.md");
@@ -801,22 +839,24 @@ async function handleApi(req, res, url) {
 
     let dest, rel;
     if (kind === "stock") {
-      dest = path.join(vdir, "tunes", "stock", `stock_${date}_${desc || "full-read"}${ext}`);
+      dest = inside(path.join(vdir, "tunes", "stock"), `stock_${date}_${desc || "full-read"}${ext}`);
       if (fs.existsSync(dest)) return send(409, { error: "a stock file with that name already exists — stock is never overwritten" });
     } else if (kind === "tune") {
       // optional rev override lets a second format (.bin + .hpt) attach to an existing revision
       let rev = q.get("rev");
-      if (rev && !/^v\d{3}$/.test(rev)) return send(400, { error: "rev must look like v001" });
+      if (rev) validRev(rev);
       if (!rev) rev = nextRev((await listFiles(path.join(vdir, "tunes"))));
-      dest = path.join(vdir, "tunes", `${rev}_${date}_${desc || "revision"}${ext}`);
+      dest = inside(path.join(vdir, "tunes"), `${rev}_${date}_${desc || "revision"}${ext}`);
     } else if (kind === "datalog") {
-      const rev = q.get("rev") || "v000";
-      dest = path.join(vdir, "datalogs", `${date}_${rev}_${desc || "log"}${ext}`);
+      const rev = validRev(q.get("rev") || "v000");
+      dest = inside(path.join(vdir, "datalogs"), `${date}_${rev}_${desc || "log"}${ext}`);
     } else return send(400, { error: "kind must be stock|tune|datalog" });
 
     await fsp.writeFile(dest, body, { flag: "wx" }).catch(async e => {
       if (e.code !== "EEXIST") throw e;
-      dest = dest.replace(ext, `-${Date.now() % 10000}${ext}`);
+      // rename the FILE — replacing ".bin" in the whole path could hit a folder
+      const p = path.parse(dest);
+      dest = path.join(p.dir, `${p.name}-${Date.now() % 10000}${p.ext}`);
       await fsp.writeFile(dest, body, { flag: "wx" });
     });
     rel = path.relative(REPO, dest);
@@ -830,7 +870,7 @@ async function handleApi(req, res, url) {
     if (analysis?.eeprom?.vin) {
       let profileVin = "";
       try {
-        const vtext = await fsp.readFile(path.join(vdir, "vehicle.md"), "utf8");
+        const vtext = await readText(path.join(vdir, "vehicle.md"));
         const row = vtext.match(/^\| VIN \| (.*?) \|$/m)?.[1]?.trim() || "";
         if (/^[A-HJ-NPR-Z0-9]{17}$/i.test(row)) profileVin = row.toUpperCase();
       } catch {}
@@ -847,7 +887,7 @@ async function handleApi(req, res, url) {
     if (kind === "stock" && analysis?.checksumSummary === "all checksums OK" && vinCheck?.status === "match") {
       try {
         const pfile = path.join(REPO, "PROGRESSION.md");
-        let ptext = await fsp.readFile(pfile, "utf8");
+        let ptext = await readText(pfile);
         const m = ptext.match(/^- \[ \] (Stock read archived[^\n]*)$/m);
         if (m) {
           ptext = ptext.replace(m[0], `- [x] ${m[1]}`);
@@ -864,27 +904,30 @@ async function handleApi(req, res, url) {
     const p = safeJoin(REPO, q.get("path") || "");
     if (path.extname(p).toLowerCase() !== ".csv")
       return send(200, { ok: false, reason: ".hpl is a proprietary format — export CSV from VCM Scanner / PCM Logger to analyze here" });
-    const text = await fsp.readFile(p, "utf8");
-    const lines = text.split(/\r?\n/).filter(l => l.trim());
-    if (lines.length < 2) return send(200, { ok: false, reason: "no data rows" });
-    const headers = lines[0].split(",").map(h => h.trim().replace(/^"|"$/g, ""));
-    const cols = headers.map(() => ({ min: Infinity, max: -Infinity, sum: 0, n: 0 }));
-    for (let i = 1; i < lines.length; i++) {
-      const cells = lines[i].split(",");
-      for (let c = 0; c < Math.min(cells.length, cols.length, 40); c++) {
-        const v = parseFloat(cells[c]);
-        if (Number.isFinite(v)) {
-          const s = cols[c];
-          if (v < s.min) s.min = v;
-          if (v > s.max) s.max = v;
-          s.sum += v; s.n++;
-        }
+    // Through the analyser's parser, not a raw comma split: an HP Tuners export
+    // has a preamble, sparse rows and commas inside channel names, and the
+    // split reported one channel named "HP Tuners CSV Log File" for all of them.
+    const parsed = parseCsv(await fsp.readFile(p, "utf8"));
+    if (!parsed.headers.length || !parsed.rows.length) return send(200, { ok: false, reason: "no data rows" });
+    // The same timestamp clean-up the analysis uses: one corrupt stamp made a
+    // 35-minute log report a duration of 16,777 s.
+    const time = parsed.timeIdx != null && parsed.timeIdx >= 0 ? normalizeTime(parsed) : null;
+    const rows = time ? time.rows : parsed.rows;
+    const cols = parsed.headers.map(() => ({ min: Infinity, max: -Infinity, sum: 0, n: 0 }));
+    for (const row of rows) {
+      for (let c = 0; c < cols.length; c++) {
+        const v = row[c];
+        if (typeof v !== "number" || !Number.isFinite(v)) continue;
+        const s = cols[c];
+        if (v < s.min) s.min = v;
+        if (v > s.max) s.max = v;
+        s.sum += v; s.n++;
       }
     }
     // every channel carries the unit stated in its own header; converted
     // values additionally name the unit they came from
     const prefs = await readPrefs();
-    const channels = headers.slice(0, 40).map((h, i) => {
+    const channels = parsed.headers.map((h, i) => {
       if (!cols[i].n) return { name: h, nonNumeric: true };
       const u = detectUnit(h);
       const native = u?.unit ?? null;
@@ -896,11 +939,13 @@ async function handleApi(req, res, url) {
         min: conv(cols[i].min), max: conv(cols[i].max), avg: conv(cols[i].sum / cols[i].n),
       };
     });
-    const timeCol = cols[headers.findIndex(h => /time|offset/i.test(h))];
+    const ti = parsed.timeIdx ?? parsed.headers.findIndex(h => /^(time|offset)/i.test(h));
+    const timeCol = ti >= 0 ? cols[ti] : null;
     return send(200, {
-      ok: true, rows: lines.length - 1, channels,
+      ok: true, format: parsed.format, rows: parsed.rows.length, channels,
       durationSec: timeCol && timeCol.n ? +(timeCol.max - timeCol.min).toFixed(1) : null,
       durationUnit: "s",
+      sessions: time?.segments ?? 1, corruptTimestamps: time?.droppedRows ?? 0,
     });
   }
 
@@ -910,10 +955,11 @@ async function handleApi(req, res, url) {
   // ----- changelog entry (prepended below the --- separator) -----
   if (req.method === "POST" && url.pathname === "/api/changelog") {
     const b = await jsonBody();
-    const file = safeJoin(REPO, path.join("vehicles", b.vehicle, "tunes", "CHANGELOG.md"));
-    let text = await fsp.readFile(file, "utf8");
+    const file = safeJoin(REPO, path.join("vehicles", b.vehicle || "", "tunes", "CHANGELOG.md"));
+    let text = await readText(file);
+    const oneLine = v => String(v || "").replace(/\s*\n\s*/g, " ");
     const entry = [
-      `## ${b.rev} — ${b.date || today()} — ${b.title || ""}`.trimEnd(),
+      `## ${validRev(b.rev)} — ${validDate(b.date)} — ${oneLine(b.title)}`.trimEnd(),
       `- **Base:** ${b.base || ""}`,
       `- **Changed:** ${b.changed || ""}`,
       `- **Why:** ${b.why || ""}`,
@@ -933,11 +979,12 @@ async function handleApi(req, res, url) {
   // ----- session log -----
   if (req.method === "POST" && url.pathname === "/api/session") {
     const b = await jsonBody();
-    const date = b.date || today();
-    const dir = safeJoin(REPO, path.join("vehicles", b.vehicle, "sessions"));
-    let file = path.join(dir, `${date}_session.md`);
+    const date = validDate(b.date);
+    const dir = safeJoin(REPO, path.join("vehicles", b.vehicle || "", "sessions"));
+    if (!fs.existsSync(dir)) return send(400, { error: `unknown vehicle: ${b.vehicle}` });
+    let file = inside(dir, `${date}_session.md`);
     let n = 2;
-    while (fs.existsSync(file)) file = path.join(dir, `${date}_session-${n++}.md`);
+    while (fs.existsSync(file)) file = inside(dir, `${date}_session-${n++}.md`);
     const md = [
       `# Tuning Session — ${date}`,
       "",
@@ -1152,6 +1199,7 @@ async function handleApi(req, res, url) {
     const vdir = safeJoin(REPO, path.join("vehicles", b.vehicle || ""));
     if (!fs.existsSync(vdir)) return send(400, { error: `unknown vehicle: ${b.vehicle}` });
     if (!b.rev) return send(400, { error: "which revision was flashed?" });
+    validRev(b.rev, { allowStock: true });
 
     // Enforcement, not decoration: re-parse the template and require every item.
     // A client that skips the UI still cannot record a flash.
@@ -1164,26 +1212,35 @@ async function handleApi(req, res, url) {
       return send(400, { error: "pre-flash checklist incomplete", missing, missingLabels: labels });
     }
 
-    const date = b.date || today();
-    await updateVehicleBullet(vdir, "Current tune revision", `${b.rev} (flashed ${date})`);
-    await updateVehicleBullet(vdir, "Last flashed", date);
+    const date = validDate(b.date);
+    // Both profile bullets must exist BEFORE anything is written: updating one
+    // and then failing on the other left a half-recorded flash.
+    const vfile = path.join(vdir, "vehicle.md");
+    let vtext = await readText(vfile);
+    for (const [label, value] of [["Current tune revision", `${b.rev} (flashed ${date})`], ["Last flashed", date]]) {
+      const re = new RegExp(`^- ${label}: .*$`, "m");
+      if (!re.test(vtext)) return send(400, { error: `vehicle.md has no "- ${label}:" line — add it under "Current state", then record the flash again` });
+      vtext = vtext.replace(re, `- ${label}: ${value}`);
+    }
 
     // flash log — one row per flash, created on first use
     const logFile = path.join(vdir, "flash-log.md");
-    const row = `| ${date} | ${b.rev} | ${(b.adapter || "your proven write interface").replace(/\|/g, "/")} | ${(b.notes || "").replace(/\|/g, "/") || "—"} |`;
+    const cell = v => String(v || "").replace(/[|\r\n]+/g, "/").trim();
+    const row = `| ${date} | ${b.rev} | ${cell(b.adapter) || "—"} | ${cell(b.notes) || "—"} |`;
     if (fs.existsSync(logFile)) {
-      const text = (await fsp.readFile(logFile, "utf8")).trimEnd();
+      const text = (await readText(logFile)).trimEnd();
       await fsp.writeFile(logFile, text + "\n" + row + "\n");
     } else {
       await fsp.writeFile(logFile,
         `# Flash log — ${b.vehicle}\n\nEvery write recorded here, newest at the bottom. Written by the app only\nafter the full pre-flash checklist has been completed.\n\n| Date | Revision | Adapter | Notes |\n|---|---|---|---|\n${row}\n`);
     }
+    await fsp.writeFile(vfile, vtext);
 
     // first recorded flash ticks the milestone — proven fact, same rule as the stock read
     let milestoneChecked = false;
     try {
       const pfile = path.join(REPO, "PROGRESSION.md");
-      let ptext = await fsp.readFile(pfile, "utf8");
+      let ptext = await readText(pfile);
       const m = ptext.match(/^- \[ \] (First successful flash[^\n]*)$/m);
       if (m) {
         ptext = ptext.replace(m[0], `- [x] ${m[1]}`);
@@ -1202,7 +1259,8 @@ async function handleApi(req, res, url) {
     const b = await jsonBody();
     const from = safeJoin(REPO, b.from || "");
     if (!fs.existsSync(from)) return send(404, { error: "file not found" });
-    if (!/[\\/]vehicles[\\/]/.test(from)) return send(400, { error: "only files under vehicles/ can be relocated" });
+    // judged inside the repo — a repo that itself lives under a "vehicles" folder must not pass everything
+    if (path.relative(REPO, from).split(path.sep)[0] !== "vehicles") return send(400, { error: "only files under vehicles/ can be relocated" });
     const ddir = safeJoin(REPO, "donor-files");
     await fsp.mkdir(ddir, { recursive: true });
     let dest = path.join(ddir, path.basename(from));
@@ -1216,13 +1274,16 @@ async function handleApi(req, res, url) {
     const HEADING = "## Moves log";
     const row = `| ${today()} | \`${path.basename(dest)}\` | \`${path.relative(REPO, from)}\` | ${(b.reason || "not this vehicle's file").replace(/\|/g, "/")} |`;
     const table = `${HEADING}\n\nFiles relocated here out of a vehicle folder, and why.\n\n| Date | File | Was | Reason |\n|---|---|---|---|\n${row}\n`;
-    try {
-      let text = await fsp.readFile(readme, "utf8");
-      text = text.includes(HEADING)
-        ? text.trimEnd() + "\n" + row + "\n"     // append under the existing table
-        : text.trimEnd() + "\n\n" + table;        // create the section once
-      await fsp.writeFile(readme, text);
-    } catch { await fsp.writeFile(readme, `# Donor / practice files\n\n${table}`); }
+    let text = null;
+    try { text = await readText(readme); }
+    catch (e) {
+      // only a MISSING index is created fresh; an unreadable one is never overwritten
+      if (e.code !== "ENOENT")
+        return send(200, { moved: path.relative(REPO, dest), warning: `moved, but the move was not logged: ${await describeReadError(readme, e)}` });
+    }
+    await fsp.writeFile(readme, text === null ? `# Donor / practice files\n\n${table}`
+      : text.includes(HEADING) ? text.trimEnd() + "\n" + row + "\n"     // append under the existing table
+      : text.trimEnd() + "\n\n" + table);                              // create the section once
     return send(200, { moved: path.relative(REPO, dest) });
   }
 
@@ -1268,7 +1329,7 @@ async function handleApi(req, res, url) {
   if (req.method === "POST" && url.pathname === "/api/vehicle-field") {
     const b = await jsonBody();
     const file = safeJoin(REPO, path.join("vehicles", b.vehicle || "", "vehicle.md"));
-    let text = await fsp.readFile(file, "utf8");
+    let text = await readText(file);
     const field = String(b.field || "");
     const re = new RegExp(`^\\| ${field.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} \\| .*\\|$`, "m");
     if (!re.test(text)) return send(400, { error: `field row not found in vehicle.md: ${field}` });
@@ -1302,8 +1363,11 @@ async function handleApi(req, res, url) {
         status: b.status || "unverified",
         updated: today(),
       };
+      // Merge into the existing entry. Rebuilding it from the form's fields
+      // dropped everything the form does not show — platform and assumes (the
+      // Gen 5 quarantine) and sample (which decides what ships publicly).
       const i = data.parameters.findIndex(p => p.id === entry.id);
-      if (i >= 0) data.parameters[i] = entry; else data.parameters.push(entry);
+      if (i >= 0) data.parameters[i] = { ...data.parameters[i], ...entry }; else data.parameters.push(entry);
     }
     await writeUserMath(data);
     return send(200, { ok: true });
@@ -1321,7 +1385,7 @@ async function handleApi(req, res, url) {
       // "Everything up-to-date" even when the commit silently failed
       if (!commit.ok && !/nothing to commit/i.test(commit.out)) {
         const hint = /author identity unknown|please tell me who you are/i.test(commit.out)
-          ? ' — run: git config --global user.name "Your Name" && git config --global user.email "you@example.com"'
+          ? ' — set it with two commands: git config --global user.name "Your Name"   then   git config --global user.email "you@example.com"'
           : "";
         return send(200, { committed: false, pushed: false, error: commit.out.split("\n").slice(0, 3).join(" ") + hint });
       }
@@ -1351,21 +1415,46 @@ async function handleApi(req, res, url) {
 
 // ---------- server ----------
 
+// ---------- who may talk to this server ----------
+// Binding to 127.0.0.1 keeps the network out, but not the browser: any page you
+// visit can send a "simple" POST to localhost, and one did write a file outside
+// the repo through the upload endpoint. DNS rebinding goes further and can READ
+// responses, tunes and VIN included. So:
+//   - the Host header must be this server's own address (defeats rebinding)
+//   - an Origin, when a browser sends one, must be this server's too
+//   - anything that changes state must carry X-Tuning-Garage, a header no other
+//     site can add without a CORS preflight this server never approves
+const ALLOWED = new Set([`127.0.0.1:${PORT}`, `localhost:${PORT}`, `[::1]:${PORT}`]);
+function refuse(req) {
+  const host = String(req.headers.host || "").toLowerCase();
+  if (!ALLOWED.has(host)) return `this server answers only to 127.0.0.1:${PORT} (got Host: ${host || "none"})`;
+  const origin = req.headers.origin;
+  if (origin && !ALLOWED.has(origin.toLowerCase().replace(/^https?:\/\//, ""))) return "cross-origin requests are refused";
+  if (req.method !== "GET" && req.method !== "HEAD" && req.headers["x-tuning-garage"] !== "1")
+    return "missing X-Tuning-Garage header — requests that change files must come from the app itself";
+  return null;
+}
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://localhost:${PORT}`);
+  const why = refuse(req);
+  if (why) { res.writeHead(403, { "content-type": "application/json" }); return res.end(JSON.stringify({ error: why })); }
   try {
     if (url.pathname.startsWith("/api/")) return await handleApi(req, res, url);
     // static frontend
     let rel = url.pathname === "/" ? "index.html" : url.pathname.slice(1);
     const p = safeJoin(PUBLIC, rel);
-    if (!fs.existsSync(p)) { res.writeHead(404); return res.end("not found"); }
+    // a directory is not a file: streaming one crashed the response
+    if (!fs.existsSync(p) || !fs.statSync(p).isFile()) { res.writeHead(404); return res.end("not found"); }
     res.writeHead(200, {
       "content-type": MIME[path.extname(p)] || "application/octet-stream",
       "cache-control": "no-store", // repo app: always serve the current file
     });
     fs.createReadStream(p).pipe(res);
   } catch (e) {
-    res.writeHead(500, { "content-type": "application/json" });
+    if (res.headersSent) { res.destroy(); return; }
+    // validation failures are the caller's mistake (400), everything else ours
+    res.writeHead(e.status || (/escapes/.test(e.message) ? 400 : 500), { "content-type": "application/json" });
     res.end(JSON.stringify({ error: e.message }));
   }
 });

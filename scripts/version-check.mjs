@@ -8,6 +8,7 @@
 //   1  a server is running but is STALE — it started before the last pull
 //   2  nothing is listening
 //   3  something is listening but it is not this app
+//   4  this checkout is broken: app/server.mjs is missing or has no version
 //
 // Why this exists: the launchd agent keeps one long-lived node process alive.
 // Pulling new code does not touch that process, so the app can go on serving
@@ -18,14 +19,18 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+// --root lets the tests point at a deliberately broken checkout
+const rootArg = process.argv.indexOf("--root");
+const REPO = rootArg > 0 ? path.resolve(process.argv[rootArg + 1]) : path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PORT = Number(process.env.PORT || 4590);
 const quiet = process.argv.includes("--quiet");
 const say = m => { if (!quiet) console.log(m); };
 
-const onDisk = (await fsp.readFile(path.join(REPO, "app/server.mjs"), "utf8"))
+// A broken checkout used to exit 3 — "something else has the port" — and the
+// launcher told the user to go and find a program that did not exist.
+const onDisk = (await fsp.readFile(path.join(REPO, "app/server.mjs"), "utf8").catch(() => ""))
   .match(/APP_VERSION\s*=\s*"([^"]+)"/)?.[1];
-if (!onDisk) { say("Could not read APP_VERSION from app/server.mjs"); process.exit(3); }
+if (!onDisk) { say("Could not read APP_VERSION from app/server.mjs — this checkout is incomplete."); process.exit(4); }
 
 // Distinguish "nothing is listening" from "something is, but not us" — the
 // two need opposite responses, so collapsing them into one code sent the

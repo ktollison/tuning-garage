@@ -98,6 +98,16 @@ console.log("— the port belongs to something else —");
   t(r.code === 3, `JSON without a version is 'not this app' (got ${r.code})`);
 }
 
+console.log("— a broken checkout is not 'something else on the port' —");
+{
+  const os = await import("node:os");
+  const empty = await fsp.mkdtemp(path.join(os.tmpdir(), "tg-vc-"));
+  const r = await check("--root", empty);
+  t(r.code === 4, `missing app/server.mjs exits 4, not 3 (got ${r.code})`);
+  t(/incomplete/.test(r.out), "and says the checkout is incomplete");
+  await fsp.rm(empty, { recursive: true, force: true });
+}
+
 console.log("— --quiet prints nothing but still sets the code —");
 {
   const s = await serve((req, res) => {

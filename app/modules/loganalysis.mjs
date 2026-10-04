@@ -115,7 +115,7 @@ const toNum = c => { const v = parseFloat(c); return Number.isFinite(v) ? v : c;
 // units and data rows. Rejoin by balancing brackets until the count matches.
 // That one sat last so only its own name was mangled, but a comma-bearing name
 // mid-list would misalign every channel after it.
-function rejoinNames(fields, target) {
+export function rejoinNames(fields, target) {
   if (!target || fields.length <= target) return fields;
   const depthOf = s => (s.match(/[([]/g) || []).length - (s.match(/[)\]]/g) || []).length;
   const out = [];
@@ -1265,6 +1265,7 @@ export function analyzeSpark(parsed, ch, channelUnits, opts = {}) {
     present: true,
     hasKnockChannel: krIdx !== undefined,
     krSignNote, krSign,
+    iatUnit,
     hasSparkChannel: ch.spark !== undefined,
     krChannel: krIdx === undefined ? null : parsed.headers[krIdx],
     sparkChannel: ch.spark === undefined ? null : parsed.headers[ch.spark],

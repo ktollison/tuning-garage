@@ -129,6 +129,13 @@
 <script>
 const $ = (s, el=document) => el.querySelector(s);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+// A value going into an onclick="…" handler. esc() alone is not enough there:
+// the browser decodes &#39; back to ' BEFORE running the handler, so a name
+// containing a quote broke out of the string — a VCM Scanner file named to
+// carry code would have run it. JSON makes a real JS string; esc then makes it
+// safe inside the attribute, and the browser's decoding gives the JSON back.
+const jsq = s => esc(JSON.stringify(String(s ?? "")));
+const unesc = s => String(s).replace(/&(amp|lt|gt|quot|#39);/g, (_, e) => ({ amp: "&", lt: "<", gt: ">", quot: '"', "#39": "'" }[e]));
 const fmtSize = n => n > 1048576 ? (n/1048576).toFixed(1) + " MB" : n > 1024 ? (n/1024).toFixed(0) + " KB" : n + " B";
 const flash = msg => { const f = $("#flash"); f.textContent = msg; f.classList.add("show"); setTimeout(() => f.classList.remove("show"), 2600); };
 
@@ -143,7 +150,9 @@ const TABS = [
   ["timeline", "Timeline"], ["scanner", "Scanner"], ["library", "Library"], ["platforms", "Platforms"],
 ];
 
-async function api(path, opts) {
+async function api(path, opts = {}) {
+  // every request that changes something carries the header the server requires
+  if (opts.method && opts.method !== "GET") opts = { ...opts, headers: { ...(opts.headers || {}), "X-Tuning-Garage": "1" } };
   const r = await fetch(path, opts);
   const isJson = (r.headers.get("content-type") || "").includes("json");
   const data = isJson ? await r.json() : await r.text();
@@ -175,7 +184,7 @@ function render() {
   }
 
   $("#nav").innerHTML = TABS.map(([id, name]) =>
-    `<button class="${TAB===id?"on":""}" onclick="TAB='${id}';location.hash='${id}';render()">${name}</button>`).join("");
+    `<button class="${TAB===id?"on":""}" onclick="TAB=${jsq(id)};location.hash=${jsq(id)};render()">${name}</button>`).join("");
 
   const views = { garage, overview, tunes, datalogs, sessions, progression, usermath, timeline, scanner, library, platforms };
   $("#main").innerHTML = views[TAB] ? views[TAB]() : overview();
@@ -258,7 +267,7 @@ function garage() {
         </table>
         <div class="actions">
           ${active ? `<button class="btn" onclick="TAB='overview';location.hash='overview';render()">Open overview</button>`
-                   : `<button class="btn primary" onclick="VEHICLE='${esc(v.id)}';TIMELINE=null;TAB='overview';location.hash='overview';render()">Work on this vehicle</button>`}
+                   : `<button class="btn primary" onclick="VEHICLE=${jsq(v.id)};TIMELINE=null;TAB='overview';location.hash='overview';render()">Work on this vehicle</button>`}
         </div>
       </div>`;
     }).join("")}
@@ -295,7 +304,7 @@ function profileEditor(v) {
       ${rows.map(([, field, value]) => `<tr>
         <td>${esc(field)}</td>
         <td><input id="pf-${esc(slugId(field))}" value="${esc(value)}" style="font-size:13px"></td>
-        <td><button class="ghost" onclick="saveProfileField('${esc(field).replace(/'/g, "\\'")}','pf-${esc(slugId(field))}')">save</button></td>
+        <td><button class="ghost" onclick="saveProfileField(${jsq(field)},${jsq("pf-" + slugId(field))})">save</button></td>
       </tr>`).join("")}
     </table>
     <div class="note">Writes straight to <code>vehicles/${esc(v.id)}/vehicle.md</code>. Values read out of a bin are drafts until you confirm them against the car.</div>
@@ -366,14 +375,14 @@ function overview() {
   </div>
   <div class="card"><h2>Milestones</h2>
     ${p.milestones.map(m => `<div style="padding:4px 0">
-      <span class="chip" onclick="toggleMilestone('${esc(m.text).replace(/'/g,"\\'")}',${!m.done})">${m.done?"✅":"☐"}</span>
+      <span class="chip" onclick="toggleMilestone(${jsq(m.text)},${!m.done})">${m.done?"✅":"☐"}</span>
       <span style="color:${m.done?"var(--good)":"var(--ink-2)"}"> ${esc(m.text)}</span></div>`).join("")}
   </div>
   ${profileEditor(v)}
 
   <div class="card"><h2>Recent sessions — ${esc(v.id)}</h2>
     ${v.sessions.length ? v.sessions.slice(0,5).map(s =>
-      `<div style="padding:5px 0;border-top:1px solid var(--grid)"><a href="#" onclick="viewFile('vehicles/${v.id}/sessions/${esc(s.name)}');return false">${esc(s.name)}</a></div>`).join("")
+      `<div style="padding:5px 0;border-top:1px solid var(--grid)"><a href="#" onclick="viewFile(${jsq(`vehicles/${v.id}/sessions/${s.name}`)});return false">${esc(s.name)}</a></div>`).join("")
       : `<div class="empty">No sessions yet — log one from the Sessions tab.</div>`}
   </div>`;
 }
@@ -389,9 +398,9 @@ function tunes() {
     </div>
     ${v.stock.length
       ? `<table><tr><th>File</th><th>Size</th><th>SHA-256</th><th></th></tr>${v.stock.map(f =>
-          `<tr><td>${esc(f.name)}${v.currentRevision.startsWith("stock") ? ` <span class="badge verified">in the car</span>` : ""}</td><td class="num">${fmtSize(f.size)}</td><td><span class="hash" title="${f.sha256 || ""}">${(f.sha256 || "").slice(0,12)}</span></td><td>${dl(`vehicles/${v.id}/tunes/stock/${f.name}`)}${binLink(`vehicles/${v.id}/tunes/stock/${f.name}`)} · <a href="#" onclick="startFlash('stock','${esc(f.name)}');return false">mark as flashed</a></td></tr>`).join("")}</table>
+          `<tr><td>${esc(f.name)}${v.currentRevision.startsWith("stock") ? ` <span class="badge verified">in the car</span>` : ""}</td><td class="num">${fmtSize(f.size)}</td><td><span class="hash" title="${f.sha256 || ""}">${(f.sha256 || "").slice(0,12)}</span></td><td>${dl(`vehicles/${v.id}/tunes/stock/${f.name}`)}${binLink(`vehicles/${v.id}/tunes/stock/${f.name}`)} · <a href="#" onclick="startFlash('stock',${jsq(f.name)});return false">mark as flashed</a></td></tr>`).join("")}</table>
          <div class="note">Stock files are never modified or overwritten — every tune starts from a copy.</div>`
-      : `<div class="empty">Not archived yet. This comes first. On a PCMHammer-supported PCM (your P01 is), archive BOTH: a FULL PCMHammer read (.bin ≈ 512 KB) and an HP Tuners base read (.hpt).</div>`}
+      : `<div class="empty">Not archived yet. This comes first. On a PCMHammer-supported PCM (Gen III P01 and P59 are), archive BOTH: a FULL PCMHammer read (.bin ≈ 512 KB) and an HP Tuners base read (.hpt).</div>`}
     <details ${stockFormats(v).bin && stockFormats(v).hpt ? "" : "open"}><summary>Upload stock read</summary>
       <form onsubmit="return uploadFile(event,'stock')">
         <div class="row">
@@ -412,7 +421,7 @@ function tunes() {
       ? `<table><tr><th>File</th><th>Size</th><th>Modified</th><th>SHA-256</th><th></th></tr>${v.tunes.map(f => {
           const rev = f.name.match(/^v\d{3}/)?.[0];
           const isFlashed = rev && v.currentRevision.startsWith(rev);
-          return `<tr><td>${esc(f.name)}${isFlashed ? ` <span class="badge verified">in the car</span>` : ""}</td><td class="num">${fmtSize(f.size)}</td><td class="num">${f.mtime.slice(0,10)}</td><td><span class="hash" title="${f.sha256 || ""}">${(f.sha256 || "").slice(0,12)}</span></td><td>${dl(`vehicles/${v.id}/tunes/${f.name}`)}${binLink(`vehicles/${v.id}/tunes/${f.name}`)}${rev ? ` · <a href="#" onclick="startFlash('${rev}');return false">mark as flashed</a>` : ""}</td></tr>`;
+          return `<tr><td>${esc(f.name)}${isFlashed ? ` <span class="badge verified">in the car</span>` : ""}</td><td class="num">${fmtSize(f.size)}</td><td class="num">${f.mtime.slice(0,10)}</td><td><span class="hash" title="${f.sha256 || ""}">${(f.sha256 || "").slice(0,12)}</span></td><td>${dl(`vehicles/${v.id}/tunes/${f.name}`)}${binLink(`vehicles/${v.id}/tunes/${f.name}`)}${rev ? ` · <a href="#" onclick="startFlash(${jsq(rev)});return false">mark as flashed</a>` : ""}</td></tr>`;
         }).join("")}</table>`
       : `<div class="empty">No revisions yet.</div>`}
     <details><summary>Check in a new revision</summary>
@@ -457,7 +466,7 @@ function tunes() {
 
 function binLink(rel) {
   return rel.toLowerCase().endsWith(".bin")
-    ? ` · <a href="#" onclick="analyzeBin('${esc(rel)}');return false">analyze</a>` : "";
+    ? ` · <a href="#" onclick="analyzeBin(${jsq(rel)});return false">analyze</a>` : "";
 }
 
 // Does this bin's VIN agree with the vehicle profile? A donor bin once passed
@@ -465,7 +474,7 @@ function binLink(rel) {
 function vinRowNote(vin, profileText) {
   const row = (profileText.match(/^\| VIN \| (.*?) \|$/m)?.[1] || "").trim();
   const known = /^[A-HJ-NPR-Z0-9]{17}$/i.test(row);
-  if (!known) return ` — <a href="#" onclick="setVin('${esc(vin)}');return false">set as this vehicle's VIN</a> <span class="note">(confirm it's this car first)</span>`;
+  if (!known) return ` — <a href="#" onclick="setVin(${jsq(vin)});return false">set as this vehicle's VIN</a> <span class="note">(confirm it's this car first)</span>`;
   if (row.toUpperCase() === vin.toUpperCase()) return ` <b style="color:var(--good)">✅ matches profile</b>`;
   return ` <b style="color:#d03b3b">⚠ DOES NOT MATCH profile VIN ${esc(row)} — wrong vehicle?</b>`;
 }
@@ -494,16 +503,24 @@ async function startFlash(rev, fileLabel) {
         <span>${esc(i.label)}</span></label></div>`).join("")}`).join("")}
     <div class="row" style="margin-top:14px">
       <div><label>Date flashed</label><input type="date" id="flashdate" value="${new Date().toISOString().slice(0,10)}"></div>
-      <div><label>Adapter used</label><input id="flashadapter" value="your proven write interface"></div>
+      <div><label>Adapter used</label><input id="flashadapter" value="${esc(lastAdapter(vh()))}" placeholder="the interface you wrote with"></div>
       <div><label>Notes (optional)</label><input id="flashnotes" value="${esc(prefill)}" placeholder="cal-only write, bench"></div>
     </div>
     <div class="actions">
-      <button class="btn primary" id="flashconfirm" disabled onclick="confirmFlash('${esc(rev)}')">Record flash</button>
+      <button class="btn primary" id="flashconfirm" disabled onclick="confirmFlash(${jsq(rev)})">Record flash</button>
       <span id="flashcount" class="note"></span>
       <button class="btn" onclick="document.getElementById('flashcard').style.display='none'">Cancel</button>
     </div>`;
   updateFlashCount();
   if (!NO_SCROLL) card.scrollIntoView({ behavior: "smooth" });
+}
+
+// The adapter from the most recent flash — usually the one used again. A new
+// user starts blank rather than with someone else's hardware filled in.
+function lastAdapter(v) {
+  const rows = (v?.flashLog || "").split("\n").filter(l => /^\|\s*\d{4}-\d{2}-\d{2}\s*\|/.test(l));
+  const cell = rows.length ? rows[rows.length - 1].split("|")[3]?.trim() : "";
+  return cell && cell !== "—" ? cell : "";
 }
 
 function updateFlashCount() {
@@ -591,7 +608,7 @@ function timeline() {
         <div class="tl-title">${e.type === "flash" ? "🔧 " : ""}${esc(e.title)}${
           e.rev && e.type === "datalog" ? ` <span class="note">against ${esc(e.rev)}</span>` : ""}</div>
         <div class="tl-detail">${e.file
-          ? `<a href="#" onclick="viewTimelineDoc('${esc(e.file)}');return false">${esc(e.detail)}</a>`
+          ? `<a href="#" onclick="viewTimelineDoc(${jsq(e.file)});return false">${esc(e.detail)}</a>`
           : esc(e.detail)}</div>
       </div>`;
     }).join("")}</div>` : `<div class="empty">Nothing recorded yet. Archive a baseline, check in a revision, log a session — they all land here automatically.</div>`}
@@ -605,7 +622,8 @@ function timeline() {
 }
 
 async function viewTimelineDoc(rel) {
-  const text = await (await fetch(`/api/file?path=${encodeURIComponent(rel)}`)).text();
+  let text;
+  try { text = await fetchText(rel); } catch (e) { flash(e.message); return; }
   $("#tldoc").innerHTML = `<h3 style="margin-top:14px">${esc(rel.split("/").pop())}</h3><pre class="md">${esc(text)}</pre>`;
 }
 
@@ -638,7 +656,7 @@ function scanner() {
     <div class="note" style="margin-bottom:8px">${counts}</div>
     <div style="margin-bottom:6px">
       ${["all", ...s.platforms].map(p =>
-        `<span class="chip-filter ${SCAN_PLATFORM === p ? "on" : ""}" onclick="SCAN_PLATFORM='${esc(p)}';render()">${p === "all" ? "All platforms" : esc(p)}</span>`).join("")}
+        `<span class="chip-filter ${SCAN_PLATFORM === p ? "on" : ""}" onclick="SCAN_PLATFORM=${jsq(p)};render()">${p === "all" ? "All platforms" : esc(p)}</span>`).join("")}
     </div>
     <div class="note">Files are stored under their original names so they load straight back into VCM Scanner. Names come from a dictionary of <b>${dictSize}</b> parameter IDs built from your own charts, graphs and layouts — anything not charted shows as a raw ID rather than a guess.</div>
   </div>
@@ -713,7 +731,7 @@ function scannerCard(f, s) {
           ${esc(d.manufacturer)} ${esc(d.device)} on CAN bus ${esc(String(d.canBus))}
           <span class="note">(parameter ${esc(d.parameterID)}, ${unitLabel(d.unitId, s.unitCodes)})</span></div>`).join("") : ""}
       <details><summary>Show channels</summary><div id="chan-${esc(f.filename)}" class="note">Click “Decode channel list”.</div></details>
-      <div class="actions"><button class="btn" onclick="loadChannels('${esc(rel)}','chan-${esc(f.filename)}')">Decode channel list</button></div>
+      <div class="actions"><button class="btn" onclick="loadChannels(${jsq(rel)},${jsq("chan-" + f.filename)})">Decode channel list</button></div>
     </div>`;
   }
 
@@ -723,8 +741,8 @@ function scannerCard(f, s) {
       <div class="note">Output: ${unitLabel(f.unitId, s.unitCodes)} · ${esc(String(f.decimals ?? "?"))} decimals ·
         references ${f.uniqueParameterIDs.length} parameter${f.uniqueParameterIDs.length === 1 ? "" : "s"}</div>
       <div class="actions">
-        <button class="btn" onclick="decodeMath('${esc(rel)}','math-${esc(f.filename)}')">Decode expression</button>
-        <button class="btn" onclick="importMath('${esc(rel)}')">Import to User Math</button>
+        <button class="btn" onclick="decodeMath(${jsq(rel)},${jsq("math-" + f.filename)})">Decode expression</button>
+        <button class="btn" onclick="importMath(${jsq(rel)})">Import to User Math</button>
       </div>
       <div id="math-${esc(f.filename)}"></div>
     </div>`;
@@ -851,14 +869,14 @@ function library() {
 
   <div class="card"><h2>Definitions (XDF) library</h2>
     ${STATE.definitions.length
-      ? STATE.definitions.map(d => `<h3>OS ${esc(d.osId)}</h3><table>${d.files.map(f =>
-          `<tr><td>${esc(f.name)}</td><td class="num">${fmtSize(f.size)}</td><td>${dl(`definitions/${d.osId}/${f.name}`)}${f.name.toLowerCase().endsWith(".xdf") ? ` · <a href="#" onclick="viewXdf('definitions/${d.osId}/${esc(f.name)}');return false"><b>browse tables</b></a>` : ""}</td></tr>`).join("")}</table>`).join("")
+      ? STATE.definitions.map(d => `<h3>OS ${esc(d.osId)}</h3>${d.error ? `<div class="note" style="color:var(--warn)">⚠ ${esc(d.error)} — read error, not an empty folder</div>` : ""}<table>${d.files.map(f =>
+          `<tr><td>${esc(f.name)}</td><td class="num">${fmtSize(f.size)}</td><td>${dl(`definitions/${d.osId}/${f.name}`)}${f.name.toLowerCase().endsWith(".xdf") ? ` · <a href="#" onclick="viewXdf(${jsq(`definitions/${d.osId}/${f.name}`)});return false"><b>browse tables</b></a>` : ""}</td></tr>`).join("")}</table>`).join("")
       : `<div class="empty">No definitions yet. XDFs are OS-specific — sources: pcmhacking.net XDF threads, ls1tech Bin &amp; XDF repository, or generate one with UniversalPatcher.</div>`}
     <details><summary>Upload a definition</summary>
       <form onsubmit="return uploadDefinition(event)">
         <div class="row">
           <div><label>File (.xdf etc.)</label><input type="file" name="file" required></div>
-          <div><label>OS ID it belongs to</label><input name="osid" placeholder="<your OS ID>" required></div>
+          <div><label>OS ID it belongs to</label><input name="osid" placeholder="12212156" required></div>
         </div>
         <div class="actions"><button class="btn primary">Save to definitions/&lt;OS&gt;/</button></div>
       </form>
@@ -871,7 +889,7 @@ function library() {
       a full worked workflow with screenshots. Then the
       <a href="#" onclick="viewDoc('DISCLAIMER.md');return false">disclaimer</a>.</div>
     ${(STATE.docs || []).map(d =>
-      `<span style="display:inline-block;margin:0 14px 6px 0"><a href="#" onclick="viewDoc('${esc(d.path)}');return false">${esc(d.name)}</a></span>`).join("")
+      `<span style="display:inline-block;margin:0 14px 6px 0"><a href="#" onclick="viewDoc(${jsq(d.path)});return false">${esc(d.name)}</a></span>`).join("")
       || `<div class="empty">No reference docs found.</div>`}
     <div id="docview2"></div>
   </div>`;
@@ -893,8 +911,8 @@ function scannerMathCard() {
         <div class="expr">${esc(f.expression)}</div>
         <div class="note">Output: ${unitLabel(f.unitId, s.unitCodes)} · ${esc(String(f.decimals ?? "?"))} decimals</div>
         <div class="actions">
-          <button class="btn" onclick="decodeMath('${esc(rel)}','umath-${esc(f.filename)}')">Decode expression</button>
-          <button class="btn" onclick="importMath('${esc(rel)}')">Add to the list above</button>
+          <button class="btn" onclick="decodeMath(${jsq(rel)},${jsq("umath-" + f.filename)})">Decode expression</button>
+          <button class="btn" onclick="importMath(${jsq(rel)})">Add to the list above</button>
         </div>
         <div id="umath-${esc(f.filename)}"></div>
       </div>`;
@@ -952,7 +970,7 @@ function renderMarkdown(src, baseDir = "") {
     .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_, txt, href) =>
       /^https?:/.test(href)
         ? `<a href="${href}" target="_blank" rel="noopener">${txt}</a>`
-        : `<a href="#" onclick="viewDoc('${(baseDir ? baseDir + "/" : "") + href.replace(/^\.\//, "")}');return false">${txt}</a>`)
+        : `<a href="#" onclick="viewDoc(${jsq((baseDir ? baseDir + "/" : "") + unesc(href).replace(/^\.\//, ""))});return false">${txt}</a>`)
     .replace(/`([^`]+)`/g, "<code>$1</code>")
     .replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>")
     .replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<i>$2</i>");
@@ -971,7 +989,8 @@ function renderMarkdown(src, baseDir = "") {
     if (h) {
       closeList(); closeTable();
       const n = Math.min(h[1].length + 1, 6);
-      out.push(`<h${n}>${inline(h[2])}</h${n}>`);
+      const id = unesc(h[2]).toLowerCase().replace(/[^\w\s-]/g, "").trim().replace(/\s+/g, "-");
+      out.push(`<h${n} id="${esc(id)}">${inline(h[2])}</h${n}>`);
       continue;
     }
     if (/^\s*(-\s*){3,}$/.test(line) || /^\s*(\*\s*){3,}$/.test(line)) {
@@ -1019,8 +1038,22 @@ function renderMarkdown(src, baseDir = "") {
   return out.join("\n").replace(/@@CODEBLOCK(\d+)@@/g, (_, i) => blocks[+i]);
 }
 
+// A failed fetch returns the server's JSON error; showing it as the document
+// would present an error message as content.
+async function fetchText(rel) {
+  const r = await fetch(`/api/file?path=${encodeURIComponent(rel)}`);
+  if (!r.ok) { let m = r.statusText; try { m = (await r.json()).error || m; } catch {} throw new Error(`${rel}: ${m}`); }
+  return r.text();
+}
+
 async function viewDoc(rel) {
-  const text = await (await fetch(`/api/file?path=${encodeURIComponent(rel)}`)).text();
+  // "USER-GUIDE.md#9-updating" is a file plus a place in it; "#5-clone" is
+  // only a place. The anchor is not part of the path.
+  const [file, anchor] = String(rel).split("#");
+  if (!file) { const h = document.getElementById(anchor); if (h) h.scrollIntoView({ behavior: "smooth" }); return; }
+  rel = file;
+  let text;
+  try { text = await fetchText(rel); } catch (e) { flash(e.message); return; }
   const target = rel.startsWith("reference/") || rel.endsWith(".md") ? ($("#docview2") || $("#docview")) : $("#docview");
   const baseDir = rel.includes("/") ? rel.slice(0, rel.lastIndexOf("/")) : "";
   target.innerHTML = `<div class="note" style="margin-top:12px">${esc(rel)}</div>
@@ -1032,7 +1065,7 @@ async function relocateToDonor(rel) {
   const reason = prompt(`Move this file out of the vehicle and into donor-files/?\n\n${rel}\n\nReason (recorded in the donor index):`, "not this vehicle's file");
   if (reason === null) return;
   const r = await api("/api/relocate", { method: "POST", body: JSON.stringify({ from: rel, reason }) });
-  flash(`Moved to ${r.moved} — see the Library tab`);
+  flash(r.warning ? `⚠ ${r.warning}` : `Moved to ${r.moved} — see the Library tab`);
   $("#analysiscard").style.display = "none";
   await load();
 }
@@ -1106,7 +1139,7 @@ async function analyzeBin(rel) {
     <div class="note" style="margin-bottom:8px">${esc(r.file)}</div>
     <table>
       <tr><td>PCM</td><td>${esc(r.model || r.pcm || "?")}</td></tr>
-      <tr><td>OS ID</td><td><b>${r.osId ?? "?"}</b>${r.osId && !osKnown ? ` — <a href="#" onclick="setOsId(${r.osId});return false">set on vehicle profile</a>` : ""}${r.osId && osKnown && String(r.osId) !== osInProfile ? ` — <b style="color:var(--warn)">⚠ vehicle.md says ${esc(osInProfile)}</b>` : ""}</td></tr>
+      <tr><td>OS ID</td><td><b>${r.osId ?? "?"}</b>${r.osId && !osKnown ? ` — <a href="#" onclick="setOsId(${jsq(r.osId)});return false">set on vehicle profile</a>` : ""}${r.osId && osKnown && String(r.osId) !== osInProfile ? ` — <b style="color:var(--warn)">⚠ vehicle.md says ${esc(osInProfile)}</b>` : ""}</td></tr>
       <tr><td>OS checksum</td><td>${cs(r.osChecksum)}</td></tr>
       ${(r.segments || []).map(s => `<tr><td>${esc(s.name)}</td><td>${s.error ? `❌ ${esc(s.error)}` : `cal ${s.calId} ${esc(s.version || "")} · checksum ${cs(s.checksum)}`}</td></tr>`).join("")}
       ${r.eeprom ? `<tr><td>VIN (draft read)</td><td>${esc(r.eeprom.vin)}${vinRowNote(r.eeprom.vin, vprofile)} · serial ${esc(r.eeprom.serial)} · BCC ${esc(r.eeprom.broadcastCode)}</td></tr>` : ""}
@@ -1117,7 +1150,7 @@ async function analyzeBin(rel) {
       <tr><td>Verdict</td><td><b>${esc(r.checksumSummary || "")}</b></td></tr>
     </table>
     ${(r.warnings || []).map(w => `<div class="note" style="color:var(--warn)">⚠ ${esc(w)}</div>`).join("")}
-    ${r.file.startsWith("vehicles/") ? `<div class="actions"><button class="btn" onclick="relocateToDonor('${esc(r.file)}')">Not this vehicle's file → move to donor files</button></div>` : ""}
+    ${r.file.startsWith("vehicles/") ? `<div class="actions"><button class="btn" onclick="relocateToDonor(${jsq(r.file)})">Not this vehicle's file → move to donor files</button></div>` : ""}
     <div class="note">${esc(r.note || "")}</div>`;
   if (!NO_SCROLL) card.scrollIntoView({ behavior: "smooth" });
 }
@@ -1148,7 +1181,7 @@ function datalogs() {
   <div class="card"><h2>Datalogs — ${esc(v.id)}</h2>
     ${v.datalogs.length
       ? `<table><tr><th>File</th><th>Size</th><th></th></tr>${v.datalogs.map(f =>
-          `<tr><td>${esc(f.name)}</td><td class="num">${fmtSize(f.size)}</td><td>${dl(`vehicles/${v.id}/datalogs/${f.name}`)}${f.name.toLowerCase().endsWith(".csv") ? ` · <a href="#" onclick="logSummary('vehicles/${v.id}/datalogs/${esc(f.name)}');return false">summary</a> · <a href="#" onclick="logAnalysis('vehicles/${v.id}/datalogs/${esc(f.name)}');return false"><b>analyze trims</b></a>` : ""}</td></tr>`).join("")}</table>`
+          `<tr><td>${esc(f.name)}</td><td class="num">${fmtSize(f.size)}</td><td>${dl(`vehicles/${v.id}/datalogs/${f.name}`)}${f.name.toLowerCase().endsWith(".csv") ? ` · <a href="#" onclick="logSummary(${jsq(`vehicles/${v.id}/datalogs/${f.name}`)});return false">summary</a> · <a href="#" onclick="logAnalysis(${jsq(`vehicles/${v.id}/datalogs/${f.name}`)});return false"><b>analyze trims</b></a>` : ""}</td></tr>`).join("")}</table>`
       : `<div class="empty">No datalogs yet.</div>`}
     <div id="logsum"></div>
   </div>
@@ -1158,7 +1191,7 @@ function datalogs() {
     <div class="row">
       ${Object.entries(STATE.quantities || {}).map(([q, def]) => `
         <div><label>${esc(q)}</label>
-          <select onchange="setUnit('${esc(q)}', this.value)">
+          <select onchange="setUnit(${jsq(q)}, this.value)">
             ${def.units.map(u => `<option ${STATE.preferences?.units?.[q] === u ? "selected" : ""}>${esc(u)}</option>`).join("")}
           </select></div>`).join("")}
     </div>
@@ -1184,7 +1217,7 @@ function sessions() {
   return `${vehicleSelect()}
   <div class="card"><h2>Session logs — ${esc(v.id)}</h2>
     ${v.sessions.length ? v.sessions.map(s =>
-      `<div style="padding:5px 0;border-top:1px solid var(--grid)"><a href="#" onclick="viewFile('vehicles/${v.id}/sessions/${esc(s.name)}');return false">${esc(s.name)}</a></div>`).join("")
+      `<div style="padding:5px 0;border-top:1px solid var(--grid)"><a href="#" onclick="viewFile(${jsq(`vehicles/${v.id}/sessions/${s.name}`)});return false">${esc(s.name)}</a></div>`).join("")
       : `<div class="empty">No sessions logged yet.</div>`}
     <div id="fileview"></div>
   </div>
@@ -1193,7 +1226,7 @@ function sessions() {
       <div class="row">
         <div><label>Date</label><input type="date" name="date" value="${new Date().toISOString().slice(0,10)}"></div>
         <div><label>Tune revision flashed</label><input name="rev" placeholder="v001 or — (stock)"></div>
-        <div><label>Tools used</label><input name="tools" placeholder="HPT MPVI3 / PCMHammer + your proven write interface"></div>
+        <div><label>Tools used</label><input name="tools" placeholder="HPT MPVI3 / PCMHammer"></div>
       </div>
       <label>Goal for this session</label><input name="goal" required>
       <label>Datalogs captured (filenames + conditions)</label><textarea name="datalogs"></textarea>
@@ -1215,8 +1248,8 @@ function progression() {
     <table><tr><th style="width:55%">Concept</th><th>Status</th><th>Notes / sessions</th></tr>
     ${s.concepts.map(c => `<tr>
       <td>${esc(c.concept)}</td>
-      <td><span class="chip" onclick="cycleStatus('${esc(c.concept).replace(/'/g,"\\'")}','${c.status}')">${c.status}</span></td>
-      <td><span class="ghost" style="cursor:pointer" onclick="editNote('${esc(c.concept).replace(/'/g,"\\'")}','${c.status}','${esc(c.notes).replace(/'/g,"\\'")}')">${esc(c.notes) || "<i style='color:var(--muted)'>add note</i>"}</span></td>
+      <td><span class="chip" onclick="cycleStatus(${jsq(c.concept)},${jsq(c.status)})">${c.status}</span></td>
+      <td><span class="ghost" style="cursor:pointer" onclick="editNote(${jsq(c.concept)},${jsq(c.status)},${jsq(c.notes)})">${esc(c.notes) || "<i style='color:var(--muted)'>add note</i>"}</span></td>
     </tr>`).join("")}</table></div>`).join("")}`;
 }
 
@@ -1240,11 +1273,11 @@ function usermath() {
           <span class="badge ${p.status==="verified"?"verified":"unverified"}">${esc(p.status)}</span>
           ${p.units ? `<span class="badge">${esc(p.units)}</span>` : ""}
           <span style="flex:1"></span>
-          <button class="ghost" onclick="copyExpr(this,'${esc(p.expression).replace(/'/g,"\\'")}')">copy</button>
-          <button class="ghost" onclick="editMath('${p.id}')">edit</button>
+          <button class="ghost" onclick="copyExpr(this,${jsq(p.expression)})">copy</button>
+          <button class="ghost" onclick="editMath(${jsq(p.id)})">edit</button>
           <a class="ghost" href="/api/usermath-export?id=${encodeURIComponent(p.id)}" style="text-decoration:none"
              title="${/\[\d+/.test(p.expression || "") ? "Download as a VCM Scanner Math Lab parameter" : "Downloads, but the expression uses channel names — VCM Scanner needs [ParameterID] references before it will accept it"}">export .xml${/\[\d+/.test(p.expression || "") ? "" : " ⚠"}</a>
-          <button class="ghost danger" onclick="delMath('${p.id}','${esc(p.name).replace(/'/g,"\\'")}')">delete</button>
+          <button class="ghost danger" onclick="delMath(${jsq(p.id)},${jsq(p.name)})">delete</button>
         </div>
         <div class="expr">${esc(p.expression)}</div>
         ${p.assumes?.requires ? `<div class="note" style="${p.assumes.warn ? "color:var(--warn);border-left:3px solid var(--warn);padding-left:8px" : ""}">
@@ -1258,17 +1291,18 @@ function usermath() {
 
   ${otherPlatform.length ? `<div class="card" style="border-color:var(--warn)">
     <h2>Other platforms — not for this vehicle</h2>
-    <div class="note">${otherPlatform.length} parameter${otherPlatform.length === 1 ? "" : "s"} imported from a
-      scanner layout for a different platform. They reference parameter IDs a Gen 3 P01 does not log, so they
-      cannot be computed on this car as written. Kept because they are valid where they came from.</div>
+    <div class="note">${otherPlatform.length} parameter${otherPlatform.length === 1 ? "" : "s"} tagged for another
+      platform, or imported before their platform was established. They may reference parameter IDs this
+      vehicle's PCM does not log, so they are kept apart until confirmed. Retag one as <code>any</code> in
+      <code>data/user-math.json</code> once you have checked it works here.</div>
     ${otherPlatform.map(p => `
       <div class="mathcard">
         <div class="mathhead"><b>${esc(p.name)}</b>
           <span class="badge">${esc(p.platform)}</span>
           <span class="badge ${p.status === "verified" ? "verified" : "unverified"}">${esc(p.status)}</span>
           <span style="flex:1"></span>
-          <button class="ghost" onclick="editMath('${p.id}')">edit</button>
-          <button class="ghost danger" onclick="delMath('${p.id}','${esc(p.name).replace(/'/g, "\\'")}')">delete</button>
+          <button class="ghost" onclick="editMath(${jsq(p.id)})">edit</button>
+          <button class="ghost danger" onclick="delMath(${jsq(p.id)},${jsq(p.name)})">delete</button>
         </div>
         <div class="expr">${esc(p.expression)}</div>
         ${p.assumes?.requires ? `<div class="note" style="${p.assumes.warn ? "color:var(--warn);border-left:3px solid var(--warn);padding-left:8px" : ""}">
@@ -1408,7 +1442,7 @@ async function logAnalysis(rel, filters) {
         <div><label><input type="checkbox" id="fCl" ${r.filters.requireClosedLoop ? "checked" : ""} style="width:auto"> Require closed loop</label></div>
         <div><label><input type="checkbox" id="fPe" ${r.filters.excludePe ? "checked" : ""} style="width:auto"> Exclude power enrichment</label></div>
       </div>
-      <div class="actions"><button class="btn primary" onclick="rerunAnalysis('${esc(rel)}')">Re-run with these filters</button></div>
+      <div class="actions"><button class="btn primary" onclick="rerunAnalysis(${jsq(rel)})">Re-run with these filters</button></div>
       <div class="note">The temperature threshold is converted into whatever unit the log records before any row is compared.</div>
     </details>
 
@@ -1494,7 +1528,7 @@ function sparkHtml(s) {
     ${!s.hasKnockChannel ? `<div class="note" style="color:var(--warn)">⚠ No knock-retard channel — spark advance is shown, but nothing here can tell you whether the engine is knocking. Log KR.</div>`
       : knocked ? `<div class="card" style="border-color:#d03b3b;margin:10px 0">
         <b style="color:#d03b3b">⚠ Knock retard on ${s.krSamples} sample${s.krSamples === 1 ? "" : "s"} across ${s.eventCount} event${s.eventCount === 1 ? "" : "s"}.</b>
-        <div class="note" style="margin-top:4px">Worst: <b>${s.worst.kr}° retard</b> at ${s.worst.rpm} RPM${s.worst.load != null ? `, ${s.worst.load} ${esc(s.yUnit || "")}` : ""}${s.worst.iat != null ? `, IAT ${s.worst.iat}°` : ""}${s.worst.spark != null ? `, ${s.worst.spark}° advance` : ""}.
+        <div class="note" style="margin-top:4px">Worst: <b>${s.worst.kr}° retard</b> at ${s.worst.rpm} RPM${s.worst.load != null ? `, ${s.worst.load} ${esc(s.yUnit || "")}` : ""}${s.worst.iat != null ? `, IAT ${s.worst.iat} ${esc(s.iatUnit || "(unit not stated)")}` : ""}${s.worst.spark != null ? `, ${s.worst.spark}° advance` : ""}.
         Knock is the failure mode that destroys pistons — resolve it before chasing fuelling or adding timing anywhere.</div></div>`
       : `<div class="note">✅ No knock retard recorded across ${s.runningSamples.toLocaleString()} running samples.</div>`}
 
@@ -1526,7 +1560,7 @@ function sparkHtml(s) {
       <h3 style="margin-top:18px">Suggested spark change</h3>
       <div class="note">Per cell, the <b>maximum</b> retard seen and the subtraction that follows from it.
         Draft readings — apply by hand, one region at a time, and re-log.</div>
-      <table><tr><th>RPM</th><th>Load (kPa)</th><th>Max KR</th><th>Subtract</th><th>IAT while knocking</th><th></th></tr>
+      <table><tr><th>RPM</th><th>Load (${esc(s.yUnit || "unit not stated")})</th><th>Max KR</th><th>Subtract</th><th>IAT while knocking</th><th></th></tr>
       ${s.sparkSuggestions.map(c => `<tr${c.iatSuspect ? ' style="opacity:.75"' : ""}>
         <td class="num">${c.rpm}–${c.rpm + s.rpmBin}</td><td class="num">${c.load}</td>
         <td class="num">${c.maxKr}°</td>
@@ -1714,7 +1748,8 @@ async function logSummary(rel) {
   const r = await api(`/api/logsummary?path=${encodeURIComponent(rel)}`);
   const el = $("#logsum");
   if (!r.ok) { el.innerHTML = `<div class="empty">${esc(r.reason)}</div>`; return; }
-  el.innerHTML = `<h3>${esc(rel.split("/").pop())} — ${r.rows} rows${r.durationSec ? `, ${r.durationSec} ${esc(r.durationUnit || "s")}` : ""}</h3>
+  el.innerHTML = `<h3>${esc(rel.split("/").pop())} — ${r.rows} rows${r.durationSec ? `, ${r.durationSec} ${esc(r.durationUnit || "s")}` : ""}${r.sessions > 1 ? `, ${r.sessions} sessions` : ""}</h3>
+    ${r.corruptTimestamps ? `<div class="note">${r.corruptTimestamps} row(s) with a corrupt timestamp left out.</div>` : ""}
     <table><tr><th>Channel</th><th>Unit</th><th>Min</th><th>Avg</th><th>Max</th></tr>
     ${r.channels.filter(c => !c.nonNumeric).map(c =>
       `<tr><td>${esc(c.name)}</td>
@@ -1735,11 +1770,15 @@ async function uploadTune(e) {
     if (attach) {
       flash(`Attached ${file.name.split(".").pop()} to ${rev} — changelog entry for ${rev} already covers it`);
     } else {
-      await api("/api/changelog", { method: "POST", body: JSON.stringify({
-        vehicle: VEHICLE, rev, title: f.title.value || f.desc.value,
-        base: f.base.value, changed: f.changed.value, why: f.why.value,
-      })});
-      flash(`Checked in ${rev} + changelog entry`);
+      try {
+        await api("/api/changelog", { method: "POST", body: JSON.stringify({
+          vehicle: VEHICLE, rev, title: f.title.value || f.desc.value,
+          base: f.base.value, changed: f.changed.value, why: f.why.value,
+        })});
+        flash(`Checked in ${rev} + changelog entry`);
+      } catch (err) {
+        flash(`⚠ ${rev} is saved, but its changelog entry failed: ${err.message} — add it to tunes/CHANGELOG.md by hand`);
+      }
     }
     await load();
   } catch (err) { flash("Check-in failed: " + err.message); }
@@ -1809,7 +1848,8 @@ function copyExpr(btn, expr) {
 }
 
 async function viewFile(rel) {
-  const text = await (await fetch(`/api/file?path=${encodeURIComponent(rel)}`)).text();
+  let text;
+  try { text = await fetchText(rel); } catch (e) { flash(e.message); return; }
   const el = $("#fileview") || $("#main");
   const box = document.createElement("div");
   box.innerHTML = `<h3 style="margin-top:14px">${esc(rel.split("/").pop())}</h3><pre class="md">${esc(text)}</pre>`;
@@ -1831,7 +1871,7 @@ async function commitPush() {
   const r = await api("/api/git", { method: "POST", body: JSON.stringify({ action: "commit-push", message }) });
   if (r.error) flash("❌ " + r.error);
   else if (r.committed && r.pushed) flash("Committed and pushed ✓");
-  else if (r.pushed) flash("Nothing new to commit; remote is up to date");
+  else if (r.pushed) flash(/->/.test(r.push || "") ? "Nothing new to commit — pushed the earlier commit(s) ✓" : "Nothing new to commit; remote is up to date");
   else flash("Committed locally; push failed — check connection and try Sync");
   await load();
 }

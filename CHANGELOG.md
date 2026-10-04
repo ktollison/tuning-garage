@@ -8,6 +8,127 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions:
 adds features, a PATCH release fixes things. Releases before 0.40.0 predate
 the public project.
 
+## [0.45.0] - 2026-10-04
+
+A full code audit, and guards that keep the public project in step with its
+source. **Update promptly**: the first two fixes close holes that let any web
+page you visit write files on your computer, or read your tunes, through the
+app.
+
+### Security
+
+- **Any website could write files through the app.** The server binds to
+  127.0.0.1, which keeps the network out but not your browser: a page can send
+  a plain POST to localhost without asking. The upload endpoint also put its
+  `date` and `rev` values into file names unchecked, so one such request wrote
+  a file outside the repository, wherever your account can write. This was
+  demonstrated against the running app before the fix. The session `date` had
+  the same flaw. Now:
+  - the server refuses any request whose `Host` or `Origin` is not its own,
+    which also stops a site using DNS rebinding to read your tunes and VIN;
+  - writes must carry an `X-Tuning-Garage` header that other sites cannot add;
+  - dates and revisions are validated, and every file written is confined to
+    its folder.
+- **A file name could run code in the app.** 33 click handlers placed names
+  into `onclick` strings in a way the browser decodes before running them, so a
+  quote ended the string. A VCM Scanner file named to carry code would have run
+  it inside the app, which can write files and push to git. Every handler now
+  passes values as proper JavaScript strings. A test proves this with hostile
+  names, and another refuses the old pattern anywhere in the page.
+
+### Fixed
+
+- **XDF tables read wrong values.** A minus after `*` or `/` was mis-parsed:
+  `X*-2` at X=3 gave −2 instead of −6, `X/-4` gave nothing, and `X*-0.1+40` at
+  100 gave 39.9 instead of 30. Floating-point tables were decoded as integers,
+  so 1.5 read as 1069547520. `^` now groups right to left.
+- **Editing a User Math formula erased what the form doesn't show**: its
+  platform and assumptions (the Gen 5 quarantine), and the flag that decides
+  whether a sample formula ships publicly. Edits now merge into the entry.
+- **The quick log summary was wrong for every HP Tuners log.** It reported one
+  channel named "HP Tuners CSV Log File". It now uses the analyser's parser
+  and its timestamp clean-up: a single corrupt timestamp had made a 35-minute
+  log report 16,777 s.
+- **A CRLF checkout emptied the Progression tab and the flash log**, so every
+  revision showed as never flashed. Git for Windows offers CRLF by default.
+  Markdown and JSON are now kept LF in every checkout, and the server reads them
+  line-ending-blind either way.
+- **Read errors no longer pass for empty files.** An unreadable `vehicle.md` or
+  flash log showed as "nothing flashed", and an unreadable definitions folder as
+  "none"; both now show the error. An unreadable donor index is no longer
+  rewritten over its moves log.
+- **Recording a flash validates first.** A revision containing `|` broke the
+  flash-log table, and a profile missing one of its bullets got half a record.
+  Both are now refused before anything is written.
+- **The submission workflow turned every fork pull request red.** A fork's
+  read-only token cannot post the analysis comment; the step no longer fails
+  the check, and the analysis is in the run summary. Its header also wrongly
+  claimed it ran no contributed code.
+- **The submission tool** never found the GitHub CLI on Windows, put a VIN in
+  the public issue title if the file name held one, and posted without asking.
+  It now finds `gh` on any system, refuses a VIN-like file name, and asks
+  before posting (`--yes` skips the question).
+- **The scrubber misaligned columns** when it removed a GPS channel from a log
+  whose names contain commas, as an AEM channel's do.
+- **A failed submission alert counted as sent**, so that submission was never
+  announced. It is now retried on the next poll.
+- **The public app assumed the author's car.** "(your P01 is)", a P01-specific
+  warning on other-platform formulas, a default write adapter, and a hardware
+  brand in a placeholder are gone. The adapter field now offers whatever was
+  used for the last recorded flash.
+- **The bin analyser said its checksum maths was unvalidated.** It verifies on
+  two real P01 reads and catches a single changed byte; the note now says so,
+  and that P59 is still unchecked.
+- **Smaller fixes:**
+  - The knock tables label load in the log's own unit, and state IAT's unit.
+  - "Check-in failed" no longer appears when only the changelog step failed.
+  - Commit & push says when it pushed an earlier commit.
+  - The document viewers show errors as errors, and follow `#anchor` links.
+  - The git identity hint no longer uses `&&`, which PowerShell rejects.
+  - A collision rename no longer touches folder names.
+  - The relocate check judges paths inside the repo.
+
+- **Two public releases, v0.31.2 and v0.31.3, had no source tag.** Their
+  sources were identified by reproducing them exactly and are now tagged.
+- `scripts/update.mjs` no longer runs when imported, and compares paths
+  case-insensitively on Windows when deciding whether it was invoked directly.
+- **The Windows launcher blamed the port when Node was missing.** A missing
+  `node` returns error code 9009, which the launcher read as "port in use by
+  something that is not this app". It now checks for Git and Node.js 18+ up
+  front and names whichever is missing. The Mac launcher does the same.
+- **A broken checkout was also reported as "port in use".** The version check
+  now has its own exit code for a missing or versionless `app/server.mjs`, and
+  both launchers say what is actually wrong.
+- **`start-tuning.cmd` is checked out with CRLF line endings.** cmd.exe can fail
+  to find a `goto` label in a batch file with LF-only endings, depending on
+  where the label falls, and the launcher is built on `goto`. It worked by
+  luck of layout. The update script applies the same rule to files it
+  installs.
+- The launcher's "use another port" hint no longer prints a chained `&&`
+  command, which PowerShell rejects. Its console window is titled
+  "Tuning Garage".
+
+### Added
+
+- **Every public release is checked against its source.** The public
+  repository must be exactly the export of the source at the same tag, with
+  nothing committed there directly. This is checked on every push to the
+  source, once a day on a schedule (a change merged on the public side would
+  otherwise go unnoticed until the next release erased it), and before every
+  publish. All 22 public releases, v0.31.0 to v0.44.0, reproduce byte for byte.
+- **Publishing refuses a release it could not reproduce later**: from
+  uncommitted source, from a commit that isn't the version's tag, or with the
+  tag unpushed. It also refuses while the public repository has commits the
+  source doesn't, which would otherwise be silently erased.
+- **The export accounts for every file.** Each tracked file must be either
+  shipped or explicitly kept private, so a new file can no longer miss a
+  release, or slip into one, unnoticed. Hand-written public versions of files
+  (README, CI workflow, platform data) must be re-reviewed whenever the source
+  they were written from changes.
+- **The update script's promise is tested against the docs.** The README and
+  User Guide list what an update never touches; a test checks that the update
+  script protects exactly those paths.
+
 ## [0.44.0] - 2026-10-04
 
 A clear update path for template users, and a documentation pass over the

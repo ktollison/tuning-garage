@@ -35,8 +35,10 @@ assert(cl.sections?.length > 0 && cl.sections.every(s => s.items.length), "check
 assert(state.preferences?.units?.temperature, "unit preferences present in state: " + state.preferences?.units?.temperature);
 assert(state.quantities?.temperature?.units?.length >= 2, "convertible quantities advertised");
 
+// writes must carry the app's header — the server refuses them otherwise
+const W = { "X-Tuning-Garage": "1" };
 const badPref = await fetch(`http://127.0.0.1:${port}/api/preferences`, {
-  method: "POST", body: JSON.stringify({ units: { temperature: "kelvin" } }),
+  method: "POST", headers: W, body: JSON.stringify({ units: { temperature: "kelvin" } }),
 });
 assert(badPref.status === 400, "invalid unit rejected");
 
@@ -47,7 +49,12 @@ const badXdf = await (await fetch(`http://127.0.0.1:${port}/api/xdf?path=README.
 assert(badXdf.ok === false || badXdf.tableCount === 0, "xdf endpoint handles a non-XDF file without throwing");
 
 const badFlash = await fetch(`http://127.0.0.1:${port}/api/flashed`, {
-  method: "POST", body: JSON.stringify({ vehicle: state.vehicles[0].id, rev: "v001", checked: [] }),
+  method: "POST", headers: W, body: JSON.stringify({ vehicle: state.vehicles[0].id, rev: "v001", checked: [] }),
 });
 assert(badFlash.status === 400, "flash rejected when checklist incomplete");
+
+const noHeader = await fetch(`http://127.0.0.1:${port}/api/preferences`, {
+  method: "POST", body: JSON.stringify({ units: {} }),
+});
+assert(noHeader.status === 403, "a write without the app's header is refused");
 console.log("smoke test passed");

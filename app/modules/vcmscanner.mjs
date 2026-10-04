@@ -159,7 +159,7 @@ export function parseFile(filename, xmlText) {
 
 // ---------- channel dictionary ----------
 // Built from the labelled files only. Coverage is therefore partial and
-// entirely dependent on what user has charted — that is stated in the UI.
+// entirely dependent on what you have charted — that is stated in the UI.
 
 export function buildDictionary(parsedFiles) {
   const dict = {};
@@ -191,7 +191,8 @@ export function decodeExpression(expression, dict, unitCodes = {}) {
     // append the unit only when it's actually known and adds information —
     // "?" is a placeholder for an un-inferred code, and "[RPM RPM]" is noise
     const sym = unit ? unitCodes[unit]?.symbol : null;
-    const useful = sym && sym !== "?" && !new RegExp(`\\b${sym.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(hit.label);
+    // lookarounds, not \b: a symbol starting with ° never sits on a word boundary
+    const useful = sym && sym !== "?" && !new RegExp(`(?<![\\w°])${sym.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?!\\w)`, "i").test(hit.label);
     return `[${hit.label.trim()}${useful ? ` ${sym}` : ""}]`;
   });
   return { decoded, unknown: [...unknown] };

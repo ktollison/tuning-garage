@@ -100,7 +100,9 @@ Put logs in `submissions/logs/` and edit `data/` files directly. CI will:
 
 - refuse the file types listed above
 - run the scrubber in `--check` mode and fail on anything identifying
-- run the analyser on your log and post what it found as a comment
+- run the analyser on your log and post what it found as a comment (on a pull
+  request from a fork, GitHub does not allow that, so it is in the check's
+  summary instead: open the check and choose **Summary**)
 - validate JSON contributions against the schema
 
 The analysis comment is the useful part: if the parser mishandles your log, it

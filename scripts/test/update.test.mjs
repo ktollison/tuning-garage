@@ -36,6 +36,7 @@ release("0.1.0", {
   "docs/old.md": "old\n", "conflict.md": "one\ntwo\n", "PROGRESSION.md": "prog v1\n",
   "vehicles/example-vehicle/vehicle.md": "example v1\n", "data/user-math.json": "{}\n",
   "start-tuning.sh": "echo 1\n", "CHANGELOG.md": notes([["0.1.0", "First"]]),
+  ".gitattributes": "*.cmd text eol=crlf\n", "start-tuning.cmd": "@echo off\necho 1\n",
 });
 fs.chmodSync(path.join(U, "start-tuning.sh"), 0o755); git(U, "add", "-A"); git(U, "commit", "-q", "--amend", "--no-edit"); git(U, "tag", "-f", "v0.1.0");
 release("0.2.0", {
@@ -44,6 +45,7 @@ release("0.2.0", {
   "docs/old.md": null, "docs/new.md": "new\n", "conflict.md": "one upstream\ntwo\n",
   "PROGRESSION.md": "prog v2\n", "vehicles/example-vehicle/vehicle.md": "example v2\n", "data/user-math.json": "{\"v\":2}\n",
   "start-tuning.sh": "echo 2\n", "CHANGELOG.md": notes([["0.2.0", "Added the widget"], ["0.1.0", "First"]]),
+  "start-tuning.cmd": "@echo off\necho 2\n",
 });
 
 // ---- a user repository made from v0.1.0, with no shared history ---------------
@@ -88,6 +90,7 @@ console.log("— a normal update —");
   t(read(W, "vehicles/example-vehicle/vehicle.md") === "example v1\n" && read(W, "vehicles/my-car/vehicle.md") === "my car\n",
     "vehicles/ untouched");
   t(/^100755/.test(git(W, "ls-files", "-s", "start-tuning.sh")), "launcher stays executable");
+  t(read(W, "start-tuning.cmd") === "@echo off\r\necho 2\r\n", "an updated .cmd lands with CRLF endings, as cmd.exe needs");
   t(git(W, "log", "-1", "--format=%s") === "Update Tuning Garage to 0.2.0", "committed with a clear message");
   t(git(W, "status", "--porcelain") === "?? conflict.md.new", "only the .new file is left for you to look at");
   t(!git(W, "tag"), "your own tags untouched");
@@ -162,3 +165,26 @@ console.log("— the project's own source repository is refused —");
 }
 
 fs.rmSync(tmp, { recursive: true, force: true });
+
+console.log("— the docs promise exactly what the code protects —");
+{
+  // What an update never touches is stated three times: in update.mjs, in the
+  // README's "Yours" list and in the User Guide's table. If they drift, users
+  // are told their data is safe when it is not — or the reverse.
+  const { isUserOwned } = await import("../update.mjs").catch(() => ({}));
+  const root = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+  const readme = fs.existsSync(path.join(root, "export-overrides", "README.md"))
+    ? fs.readFileSync(path.join(root, "export-overrides", "README.md"), "utf8")       // the source of the public README
+    : fs.readFileSync(path.join(root, "README.md"), "utf8");                          // as shipped
+  const yours = readme.split("**Yours**")[1]?.split("```")[1] || "";
+  const guide = fs.readFileSync(path.join(root, "USER-GUIDE.md"), "utf8").split("## 9.")[1]?.split("## 10.")[0] || "";
+  const promised = { "vehicles/": "vehicles/x/tunes/a.bin", "PROGRESSION.md": "PROGRESSION.md",
+    "data/user-math.json": "data/user-math.json", "data/preferences.json": "data/preferences.json",
+    "vcm-scanner/": "vcm-scanner/channels/a.xml", "definitions/": "definitions/12345678/a.xdf" };
+  for (const [doc, sample] of Object.entries(promised)) {
+    t(yours.includes(doc) && guide.includes(doc.replace(/\/$/, "")), `README and User Guide both list ${doc}`);
+    t(isUserOwned && isUserOwned(sample), `and update.mjs really protects it (${sample})`);
+  }
+  t(isUserOwned && !isUserOwned("app/server.mjs") && !isUserOwned("definitions/README.md") && !isUserOwned("vcm-scanner/README.md"),
+    "project files are not mistaken for yours");
+}

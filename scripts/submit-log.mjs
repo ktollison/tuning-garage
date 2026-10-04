@@ -35,16 +35,27 @@ const args = process.argv.slice(2);
 const dryRun = args.includes("--dry-run");
 const file = args.find(a => !a.startsWith("-"));
 if (!file) {
-  console.error("usage: node scripts/submit-log.mjs <log.csv> [--dry-run]");
+  console.error("usage: node scripts/submit-log.mjs <log.csv> [--dry-run] [--yes]");
   process.exit(2);
 }
 if (!fs.existsSync(file)) { console.error(`No such file: ${file}`); process.exit(2); }
 
 const step = m => console.log(`\n── ${m}`);
-const has = (cmd) => spawnSync("command", ["-v", cmd], { shell: true }).status === 0;
+// Ask the tool itself. `command -v` needs a POSIX shell, which Windows does not
+// have, so every Windows contributor was told gh was missing when it was not.
+const has = (cmd) => spawnSync(cmd, ["--version"], { stdio: "ignore" }).status === 0;
+const yes = args.includes("--yes");
 
 // ---- 1. scrub, and refuse rather than warn ---------------------------------
 step("Checking for identifying data");
+// The scrubber reads the file's CONTENTS. Its NAME goes into the public issue
+// title and body, so a VIN in the filename would be published by this script.
+const VIN_IN_NAME = /(?<![A-Z0-9])(?=[A-HJ-NPR-Z0-9]{17}(?![A-Z0-9]))(?=[A-Z0-9]*\d)(?=[A-Z0-9]*[A-HJ-NPR-Z])[A-HJ-NPR-Z0-9]{17}/i;
+if (VIN_IN_NAME.test(path.basename(file))) {
+  console.error(`\nThe file NAME looks like it contains a VIN: ${path.basename(file)}`);
+  console.error("It would appear in the public issue title. Rename the file, then run this again.");
+  process.exit(1);
+}
 const scrub = spawnSync(process.execPath,
   [path.join(REPO, "scripts/scrub-log.mjs"), "--check", file],
   { encoding: "utf8" });
@@ -138,6 +149,18 @@ if (!has("gh")) {
   console.log(`  Paste:  ${path.join(dir, "issue-body.md")}`);
   console.log(`  Attach: ${path.join(dir, path.basename(file))}`);
   process.exit(0);
+}
+// Posting is public and cannot be fully undone, so ask — once, plainly.
+if (!yes) {
+  if (!process.stdin.isTTY) {
+    console.log("  Not running in a terminal, so I cannot ask. Re-run with --yes to post, or post by hand:");
+    console.log(`  https://github.com/${PROJECT}/issues/new/choose`);
+    process.exit(0);
+  }
+  const rl = (await import("node:readline")).createInterface({ input: process.stdin, output: process.stdout });
+  const a = await new Promise(res => rl.question(`  Post this as a PUBLIC issue on github.com/${PROJECT}? [y/N] `, res));
+  rl.close();
+  if (!/^y(es)?$/i.test(a.trim())) { console.log(`  Not posted. The bundle is at ${dir}`); process.exit(0); }
 }
 try {
   execFileSync("gh", ["auth", "status"], { stdio: "pipe" });

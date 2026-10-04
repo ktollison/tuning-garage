@@ -160,3 +160,17 @@ console.log("— 9. commanded enrichment is lean-checked even below the WOT thro
 }
 
 console.log("\naudit regression tests done");
+
+// ---------------------------------------------------------------------------
+console.log("— code audit: units are stated, not implied —");
+{
+  // The worst-knock line printed IAT as a bare "°"; the analysis now says which.
+  const rows = []; for (let i = 0; i < 40; i++) rows.push(`${(i * 0.1).toFixed(1)},4000,95,${i === 20 ? 3 : 0},28,110`);
+  const r = analyze(log("Offset,Engine RPM (SAE),Intake Manifold Absolute Pressure (SAE),Knock Retard,Timing Advance (SAE),Intake Air Temp (SAE)",
+                        "s,rpm,kPa,°,°,°F", rows));
+  t(r.spark.iatUnit === "°F", `spark analysis reports the IAT unit (${r.spark.iatUnit})`);
+  const { decodeExpression } = await import("../../app/modules/vcmscanner.mjs");
+  // a symbol starting with ° never sat on a word boundary, so the unit was appended twice
+  t(decodeExpression("[1.2]", { 1: { label: "Coolant Temp °F" } }, { 2: { symbol: "°F" } }).decoded === "[Coolant Temp °F]",
+    "a unit already in the channel name is not repeated");
+}

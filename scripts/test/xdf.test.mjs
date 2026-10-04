@@ -113,3 +113,25 @@ const tiny = Buffer.alloc(16);
 const rt2 = readTable(tiny, maf);
 t(rt2.values[0][0] === null, "out-of-range reads return null instead of throwing");
 console.log("\nxdf fixture tests done");
+
+console.log("— equations with a minus after * or /, and right-to-left powers —");
+{
+  // X*-2 used to evaluate as (X*0)-2 = -2, and X/-4 as a division by zero.
+  const cases = [["X*-2", 3, -6], ["X/-4", 8, -2], ["X*-0.1+40", 100, 30], ["-X+10", 3, 7],
+                 ["-X^2", 3, -9], ["2^3^2", 0, 512], ["+X*2", 3, 6], ["X--2", 3, 5], ["(X-128)*0.5", 200, 36]];
+  for (const [e, x, want] of cases) {
+    const got = makeEval(e)(x);
+    t(Math.abs(got - want) < 1e-9, `${e} at X=${x} → ${got} (want ${want})`);
+  }
+}
+
+console.log("— floating-point cells are decoded as floats —");
+{
+  const b = Buffer.alloc(16);
+  b.writeFloatBE(1.5, 0); b.writeFloatLE(-2.25, 4); b.writeDoubleBE(3.125, 8);
+  const tbl = (address, bits, lsbFirst) => ({ title: "f", rows: 1, cols: 1,
+    z: { address, bits, signed: false, lsbFirst, floating: true, decimals: 4, equation: "X" } });
+  t(readTable(b, tbl(0, 32, false)).values[0][0] === 1.5, "32-bit big-endian float reads 1.5, not 1069547520");
+  t(readTable(b, tbl(4, 32, true)).values[0][0] === -2.25, "32-bit little-endian float reads -2.25");
+  t(readTable(b, tbl(8, 64, false)).values[0][0] === 3.125, "64-bit float reads 3.125");
+}

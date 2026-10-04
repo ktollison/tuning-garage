@@ -2,6 +2,13 @@
 # Tuning Garage launcher (Mac). Run: ./start-tuning.sh
 cd "$(dirname "$0")"
 
+# Check the tools first, so a missing or old one is named rather than
+# surfacing later as a confusing failure.
+command -v git >/dev/null 2>&1 || { echo "Git was not found - see SETUP-MAC.md, step 1 (brew install git)."; exit 1; }
+command -v node >/dev/null 2>&1 || { echo "Node.js was not found - see SETUP-MAC.md, step 1 (brew install node)."; exit 1; }
+node -e "process.exit(+process.versions.node.split('.')[0] >= 18 ? 0 : 1)" ||
+  { echo "Node.js 18 or newer is needed - this machine has $(node --version). Run: brew upgrade node"; exit 1; }
+
 PORT="${PORT:-4590}"
 URL="http://127.0.0.1:$PORT"
 LABEL="com.tuninggarage.app"
@@ -47,6 +54,11 @@ case $? in
     # started by hand: stop it, then fall through and start in the foreground
     pid=$(lsof -nP -iTCP:"$PORT" -sTCP:LISTEN -t 2>/dev/null)
     [ -n "$pid" ] && kill "$pid" 2>/dev/null && sleep 1
+    ;;
+  4)
+    echo "app/server.mjs is missing or has no version - this folder is not a complete"
+    echo "Tuning Garage checkout. Check git status, or clone your repository again."
+    exit 1
     ;;
   3)
     echo "Port $PORT is in use by something that is not this app."

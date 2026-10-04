@@ -1,8 +1,11 @@
 name: Submissions
 
 # Validates contributed logs and data, and reports what the analyser made of
-# them. Runs on PRs from forks, so it is deliberately read-only: no checkout of
-# untrusted code is executed, only data files are read.
+# them. It runs the PR's own copy of the scripts and tests — which is why it
+# uses `pull_request`, never `pull_request_target`: a fork PR gets a read-only
+# token and no secrets, so nothing a contributor changes can reach the repo.
+# The same read-only token cannot post a comment on a fork PR, so the comment
+# step may fail there; the analysis is always in the run's summary.
 
 on:
   pull_request:
@@ -69,6 +72,9 @@ jobs:
 
       - name: Comment with the analysis
         if: success()
+        # fork PRs get a read-only token: posting fails there, and that must not
+        # turn a perfectly good submission red — the summary still has it
+        continue-on-error: true
         uses: actions/github-script@v7
         with:
           script: |
