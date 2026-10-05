@@ -2,6 +2,11 @@
 //
 //   node scripts/submit-log.mjs <log.csv>              scrub, analyse, submit
 //   node scripts/submit-log.mjs <log.csv> --dry-run    build it, send nothing
+//   node scripts/submit-log.mjs <log.csv> --yes        post without asking
+//
+// The same steps as the app's "share" link (app/modules/submission.mjs). With
+// the GitHub CLI signed in, the scrubbed log goes up as a secret gist and the
+// issue links to it; without it, you get GitHub's form pre-filled.
 //
 // The steps a contributor would otherwise do by hand, in the order that keeps
 // them safe: scrub first and REFUSE if anything identifying survives, then
@@ -18,171 +23,74 @@
 // silently created on demand makes a misconfigured location look like "no
 // submissions" rather than "wrong directory", which cost that project real time.
 
-import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import readline from "node:readline";
 import { analyze } from "../app/modules/loganalysis.mjs";
-
-const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const PROJECT = process.env.TUNING_PROJECT_REPO || "ktollison/tuning-garage";
-const STORE = process.env.TUNING_SUBMISSIONS_DIR
-  || path.join(os.homedir(), ".local", "share", "tuning-garage", "submissions");
+import { scrubText, vinInName } from "../app/modules/scrub.mjs";
+import { PROJECT, STORE, vehicleFields, buildIssue, prefillUrl, ghReady, postWithGh } from "../app/modules/submission.mjs";
 
 const args = process.argv.slice(2);
-const dryRun = args.includes("--dry-run");
+const dryRun = args.includes("--dry-run"), yes = args.includes("--yes");
 const file = args.find(a => !a.startsWith("-"));
-if (!file) {
-  console.error("usage: node scripts/submit-log.mjs <log.csv> [--dry-run] [--yes]");
-  process.exit(2);
-}
+if (!file) { console.error("usage: node scripts/submit-log.mjs <log.csv> [--dry-run] [--yes]"); process.exit(2); }
 if (!fs.existsSync(file)) { console.error(`No such file: ${file}`); process.exit(2); }
-
 const step = m => console.log(`\n── ${m}`);
-// Ask the tool itself. `command -v` needs a POSIX shell, which Windows does not
-// have, so every Windows contributor was told gh was missing when it was not.
-const has = (cmd) => spawnSync(cmd, ["--version"], { stdio: "ignore" }).status === 0;
-const yes = args.includes("--yes");
+const name = path.basename(file);
 
-// ---- 1. scrub, and refuse rather than warn ---------------------------------
+// ---- 1. scrub ----------------------------------------------------------------
 step("Checking for identifying data");
-// The scrubber reads the file's CONTENTS. Its NAME goes into the public issue
-// title and body, so a VIN in the filename would be published by this script.
-const VIN_IN_NAME = /(?<![A-Z0-9])(?=[A-HJ-NPR-Z0-9]{17}(?![A-Z0-9]))(?=[A-Z0-9]*\d)(?=[A-Z0-9]*[A-HJ-NPR-Z])[A-HJ-NPR-Z0-9]{17}/i;
-if (VIN_IN_NAME.test(path.basename(file))) {
-  console.error(`\nThe file NAME looks like it contains a VIN: ${path.basename(file)}`);
+// The scrubber reads the file's CONTENTS. Its NAME goes into the public issue,
+// so a VIN in the file name would be published.
+if (vinInName(name)) {
+  console.error(`\nThe file NAME looks like it contains a VIN: ${name}`);
   console.error("It would appear in the public issue title. Rename the file, then run this again.");
   process.exit(1);
 }
-const scrub = spawnSync(process.execPath,
-  [path.join(REPO, "scripts/scrub-log.mjs"), "--check", file],
-  { encoding: "utf8" });
-process.stdout.write(scrub.stdout || "");
-if (scrub.status !== 0) {
-  console.error("\nThis log still contains identifying data. Nothing has been sent.");
-  console.error(`Redact it first:  node scripts/scrub-log.mjs ${file}`);
-  console.error("Then submit the .scrubbed.csv file instead.");
-  process.exit(1);
-}
+const { text, findings } = scrubText(await fsp.readFile(file, "utf8"));
+console.log(findings.length ? findings.map(f => `  redacted: ${f}`).join("\n") : "  nothing identifying found");
 
-// ---- 2. analyse ------------------------------------------------------------
+// ---- 2. analyse ----------------------------------------------------------------
 step("Reading the log");
-const text = await fsp.readFile(file, "utf8");
 const r = analyze(text);
 if (r.error) { console.error(`The analyser could not read this file: ${r.error}`); process.exit(1); }
+console.log(`  format ${r.format} · ${r.rowCount} rows · ${Object.keys(r.channels || {}).length} channels detected`);
 
-const channels = Object.keys(r.channels || {});
-console.log(`  format ${r.format} · ${r.rowCount} rows · ${channels.length} channels detected`);
-if (r.resampled) console.log(`  ${r.resampled.sessions} session(s), ${r.resampled.durationSec}s`);
-if (r.silentChannels?.length) console.log(`  ${r.silentChannels.length} channel(s) logged but empty`);
+// a log inside a vehicle folder borrows that vehicle's platform — never its VIN
+const parts = path.resolve(file).split(path.sep), vi = parts.lastIndexOf("vehicles");
+const profile = vi >= 0 ? path.join(parts.slice(0, vi + 2).join(path.sep), "vehicle.md") : null;
+const fields = profile && fs.existsSync(profile) ? vehicleFields(fs.readFileSync(profile, "utf8")) : { platform: "", vehicle: "" };
+const issue = buildIssue(r, { file: name, ...fields });
 
-// ---- 3. package ------------------------------------------------------------
+// ---- 3. package, outside the repository ----------------------------------------
 step("Packaging");
-if (!fs.existsSync(STORE)) {
-  // Say so. A silently created directory turns a wrong path into "no data".
-  console.log(`  creating submission store: ${STORE}`);
-  await fsp.mkdir(STORE, { recursive: true });
-}
-const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-const dir = path.join(STORE, `${stamp}_${path.basename(file, path.extname(file))}`);
+if (!fs.existsSync(STORE)) { console.log(`  creating submission store: ${STORE}`); await fsp.mkdir(STORE, { recursive: true }); }
+const dir = path.join(STORE, `${new Date().toISOString().replace(/[:.]/g, "-")}_${name.replace(/\.[^.]+$/, "").replace(/[^\w-]+/g, "-")}`);
 await fsp.mkdir(dir, { recursive: true });
-await fsp.copyFile(file, path.join(dir, path.basename(file)));
-
-const meta = {
-  submittedAt: new Date().toISOString(),
-  file: path.basename(file),
-  bytes: (await fsp.stat(file)).size,
-  format: r.format,
-  rows: r.rowCount,
-  usableRows: r.keptCount,
-  sessions: r.resampled?.sessions ?? 1,
-  channelsDetected: channels,
-  channelsMissing: r.missingChannels || [],
-  channelsSilent: (r.silentChannels || []).map(s => s.column),
-  units: Object.fromEntries(Object.entries(r.channelUnits || {})
-    .filter(([, u]) => u.column).map(([role, u]) => [role, u.unit])),
-  wideband: r.wideband?.present ? { channel: r.wideband.channel, scale: r.wideband.scale.scale } : null,
-  warnings: r.warnings || [],
-};
-await fsp.writeFile(path.join(dir, "metadata.json"), JSON.stringify(meta, null, 2) + "\n");
-
-const body = [
-  "### What is in this log",
-  "",
-  "<!-- what you were doing, and what looks wrong -->",
-  "",
-  "### What the analyser made of it",
-  "",
-  "| | |",
-  "|---|---|",
-  `| Format | \`${r.format}\` |`,
-  `| Rows | ${r.rowCount}${r.keptCount != null ? ` (${r.keptCount} usable)` : ""} |`,
-  r.resampled ? `| Sessions | ${r.resampled.sessions} over ${r.resampled.durationSec}s |` : "",
-  `| Channels detected | ${channels.length} |`,
-  r.wideband?.present ? `| Wideband | \`${r.wideband.channel}\` read as ${r.wideband.scale.scale} |` : "| Wideband | none found |",
-  "",
-  `**Channels:** ${channels.map(c => `\`${c}\``).join(", ") || "_none_"}`,
-  "",
-  r.missingChannels?.length ? `**Not found:** ${r.missingChannels.map(c => `\`${c}\``).join(", ")}\n` : "",
-  (r.silentChannels || []).length
-    ? "**Logged but empty:**\n" + r.silentChannels.map(s => `- \`${s.column}\``).join("\n") + "\n" : "",
-  (r.warnings || []).length
-    ? "<details><summary>Warnings</summary>\n\n" + r.warnings.map(w => `- ${w}`).join("\n") + "\n\n</details>\n" : "",
-  "---",
-  "_Prepared by `scripts/submit-log.mjs`. The attached log passed `scrub-log.mjs --check`._",
-].filter(Boolean).join("\n");
-await fsp.writeFile(path.join(dir, "issue-body.md"), body + "\n");
+const csvPath = path.join(dir, name);
+await fsp.writeFile(csvPath, text);
+await fsp.writeFile(path.join(dir, "issue-body.md"), issue.body + "\n");
 console.log(`  bundle: ${dir}`);
 
-// ---- 4. submit -------------------------------------------------------------
+// ---- 4. submit -----------------------------------------------------------------
 step("Submitting");
-if (dryRun) {
-  console.log("  --dry-run: nothing sent.");
-  console.log(`  Body ready at ${path.join(dir, "issue-body.md")}`);
+if (dryRun) { console.log("  --dry-run: nothing sent."); process.exit(0); }
+const gh = ghReady();
+if (!gh.ready) {
+  console.log(`  ${gh.why}, so nothing was posted. Open GitHub's form, pre-filled:`);
+  console.log(`  ${prefillUrl(PROJECT, { title: issue.title, ...fields, wideband: r.wideband?.present ? r.wideband.channel : "" })}`);
+  console.log(`  …and drag in: ${csvPath}`);
   process.exit(0);
 }
-if (!has("gh")) {
-  console.log("  The GitHub CLI (`gh`) is not installed, so nothing was posted.");
-  console.log(`  Open an issue at https://github.com/${PROJECT}/issues/new/choose`);
-  console.log(`  Paste:  ${path.join(dir, "issue-body.md")}`);
-  console.log(`  Attach: ${path.join(dir, path.basename(file))}`);
-  process.exit(0);
-}
-// Posting is public and cannot be fully undone, so ask — once, plainly.
 if (!yes) {
-  if (!process.stdin.isTTY) {
-    console.log("  Not running in a terminal, so I cannot ask. Re-run with --yes to post, or post by hand:");
-    console.log(`  https://github.com/${PROJECT}/issues/new/choose`);
-    process.exit(0);
-  }
-  const rl = (await import("node:readline")).createInterface({ input: process.stdin, output: process.stdout });
-  const a = await new Promise(res => rl.question(`  Post this as a PUBLIC issue on github.com/${PROJECT}? [y/N] `, res));
+  if (!process.stdin.isTTY) { console.log("  Not running in a terminal, so I cannot ask. Re-run with --yes to post."); process.exit(0); }
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  const a = await new Promise(res => rl.question(`  Post this as a PUBLIC issue on github.com/${PROJECT}, with the log as a secret gist? [y/N] `, res));
   rl.close();
   if (!/^y(es)?$/i.test(a.trim())) { console.log(`  Not posted. The bundle is at ${dir}`); process.exit(0); }
 }
-try {
-  execFileSync("gh", ["auth", "status"], { stdio: "pipe" });
-} catch {
-  console.log("  `gh` is installed but not signed in — run `gh auth login`, or post by hand:");
-  console.log(`  https://github.com/${PROJECT}/issues/new/choose`);
-  console.log(`  Body: ${path.join(dir, "issue-body.md")}`);
-  process.exit(0);
-}
-
-const title = `[log] ${path.basename(file)} — ${r.format}, ${channels.length} channels`;
-let url;
-try {
-  url = execFileSync("gh", ["issue", "create", "--repo", PROJECT, "--title", title,
-    "--label", "submission", "--label", "datalog",
-    "--body-file", path.join(dir, "issue-body.md")], { encoding: "utf8" }).trim();
-} catch (e) {
-  console.error("  Could not create the issue:", (e.stderr || e.message).toString().slice(0, 300));
-  console.error(`  The bundle is still at ${dir} — post it by hand.`);
-  process.exit(1);
-}
-console.log(`  ${url}`);
-console.log("\n  GitHub issues cannot take a file attachment from the CLI —");
-console.log(`  open the issue and drag in:  ${path.join(dir, path.basename(file))}`);
-await fsp.writeFile(path.join(dir, "issue-url.txt"), url + "\n");
+const posted = postWithGh({ csvPath, title: issue.title, body: issue.body, project: PROJECT });
+if (!posted.ok) { console.error(`  ${posted.error}`); process.exit(1); }
+console.log(`  issue: ${posted.issueUrl}\n  log:   ${posted.gistUrl}`);
+await fsp.writeFile(path.join(dir, "posted.json"), JSON.stringify(posted, null, 2) + "\n");

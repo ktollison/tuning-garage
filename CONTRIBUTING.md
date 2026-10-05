@@ -69,20 +69,30 @@ place for "is this reading right?", "why does my log look like this?", or an
 idea worth talking through before anyone builds it. An issue is better once
 there is something concrete to act on.
 
-## Two ways to submit
+## Ways to submit
 
-### Let the tool do it (easiest)
+### From the app (easiest)
+
+On the **Datalogs** tab, click **share** beside the CSV. The app scrubs the log,
+shows you what was redacted and the exact issue text, and asks for the four
+confirmations. With the GitHub CLI signed in it posts for you: the scrubbed log
+as a secret gist (unlisted, readable by anyone with the link) and the issue
+linking to it. Without `gh`, it opens the issue form pre-filled and hands you
+the scrubbed file to drag in.
+
+### From the command line
 
 ```bash
 node scripts/submit-log.mjs yourlog.csv
 ```
 
-It scrubs the log and **refuses to go any further if anything identifying
-survives**, runs the analyser, writes a bundle, and opens the issue for you when
-the GitHub CLI is installed and signed in. Without `gh` it stops after the
-bundle and tells you exactly what to paste and attach — you are never stuck.
+The same steps: it scrubs the log (and refuses a file whose *name* contains a
+VIN), runs the analyser, writes a bundle, and asks before posting. With `gh`
+signed in it posts the gist and the issue; without, it prints the pre-filled
+form link and the file to attach.
 
-Add `--dry-run` to build the bundle and send nothing.
+Add `--dry-run` to build the bundle and send nothing, `--yes` to skip the
+question.
 
 The bundle is written **outside this repository**, under
 `~/.local/share/tuning-garage/submissions/`, so a submission can never be

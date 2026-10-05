@@ -9,6 +9,7 @@
 // HP Tuners, after you agree with it.
 
 import { detectUnit, convert, requireUnit } from "./units.mjs";
+import { compile } from "./expr.mjs";
 
 // ---------- channel detection ----------
 // VCM Scanner column names vary by layout and are user-editable, so match
@@ -35,6 +36,7 @@ const PATTERNS = {
   pe:          [/power\s*enrich/i, /\bpe\b/i],
   closedLoop:  [/closed.?loop/i, /fuel\s*sys/i, /\bcl\b/i],
   knockRetard: [/knock\s*retard/i, /\bkr\b/i],
+  injectorPw:  [/injector\s*pulse\s*width/i, /\bipw\b/i],
   // PCM supply voltage. Collapsing toward 0 V is the key going off — the one
   // unambiguous sign the rest of the row is no longer the PCM's live data.
   moduleVoltage: [/control\s*module\s*volt/i, /\b(pcm|ecm|ecu)\s*volt/i, /\b(battery|system|ignition)\s*volt/i],
@@ -557,13 +559,21 @@ export function makeWidebandReader(parsed, ch, scale, stoich, opts = {}) {
   const W = { ...WIDEBAND_VALID, ...(opts.widebandValid || {}) };
   const ti = ch.time ?? parsed.timeIdx;
   const values = new Map();
-  const stats = { implausible: 0, settling: 0, minLambda: W.minLambda, settleSec: W.settleSec };
+  const stats = { implausible: 0, settling: 0, minLambda: W.minLambda, settleSec: W.settleSec, runs: [] };
   let lastBad = null;
   for (const row of parsed.rows) {
     const l = toLambda(num(row, ch.widebandAfr), scale, stoich);
     if (l === null) continue;
     const t = num(row, ti);
-    if (l < W.minLambda) { stats.implausible++; if (t !== null) lastBad = t; continue; }
+    if (l < W.minLambda) {
+      stats.implausible++;
+      if (t !== null) {
+        const r = stats.runs.at(-1);
+        if (r && t - r.tEnd <= 1) r.tEnd = t; else stats.runs.push({ t, tEnd: t });
+        lastBad = t;
+      }
+      continue;
+    }
     if (t !== null && lastBad !== null && t - lastBad < W.settleSec) { stats.settling++; continue; }
     values.set(row, l);
   }
@@ -1015,6 +1025,7 @@ export function analyzeWideband(parsed, ch, channelUnits, opts = {}) {
 
   const wotByRpm = new Map();
   let wotSamples = 0, leanWotSamples = 0, worstWot = null;
+  const leanRuns = [];
   const clPairs = [];
   const loop = makeLoopReader(parsed, ch);
   const isWarmup = makeWarmupTest(parsed, ch, channelUnits, opts);
@@ -1064,7 +1075,16 @@ export function analyzeWideband(parsed, ch, channelUnits, opts = {}) {
       if (cmd !== null) { b.pairN++; b.pairWb += wb; b.pairCmd += cmd; }
       if (b.leanest === null || wb > b.leanest) b.leanest = wb;
       wotSamples++;
-      if (wb > leanLimit || (cmd !== null && wb > cmd * (1 + leanMargin / 100))) leanWotSamples++;
+      if (wb > leanLimit || (cmd !== null && wb > cmd * (1 + leanMargin / 100))) {
+        leanWotSamples++;
+        // contiguous lean samples (gaps under 1 s) form one run, for the timeline
+        const t = num(row, ch.time ?? parsed.timeIdx);
+        const last = leanRuns.at(-1);
+        if (t !== null && last && t - last.tEnd <= 1) {
+          last.tEnd = t; last.samples++;
+          if (wb > last.worstLambda) Object.assign(last, { worstLambda: +wb.toFixed(3), commanded: cmd === null ? null : +cmd.toFixed(3), rpm });
+        } else if (t !== null) leanRuns.push({ t, tEnd: t, samples: 1, worstLambda: +wb.toFixed(3), commanded: cmd === null ? null : +cmd.toFixed(3), rpm });
+      }
       if (!worstWot || wb > worstWot.lambda) worstWot = { lambda: +wb.toFixed(3), rpm, tps, commanded: cmd === null ? null : +cmd.toFixed(3) };
     }
     if (cl === true && !pe && cmd !== null) clPairs.push({ wb, cmd });
@@ -1115,6 +1135,7 @@ export function analyzeWideband(parsed, ch, channelUnits, opts = {}) {
                      warmupExcluded },
     wotSamples, leanWotSamples,
     worstWot,
+    leanRuns,
     sensorInvalid: wbReader.stats,
     wot,
     closedLoopCheck,
@@ -1210,9 +1231,9 @@ export function analyzeSpark(parsed, ch, channelUnits, opts = {}) {
     // contiguous run of retard = one knock event
     if (kr !== null && kr >= krThreshold) {
       krSamples++;
-      if (!cur) cur = { startRow: i, samples: 0, peakKr: 0, rpmAt: rpm, rpmMin: rpm, rpmMax: rpm, load: y, iat, ect, tps, spark: adv };
+      if (!cur) cur = { startRow: i, peakRow: i, samples: 0, peakKr: 0, rpmAt: rpm, rpmMin: rpm, rpmMax: rpm, load: y, iat, ect, tps, spark: adv };
       cur.samples++;
-      if (kr > cur.peakKr) { cur.peakKr = kr; cur.rpmAt = rpm; cur.load = y; cur.iat = iat; cur.spark = adv; }
+      if (kr > cur.peakKr) { cur.peakKr = kr; cur.peakRow = i; cur.rpmAt = rpm; cur.load = y; cur.iat = iat; cur.spark = adv; }
       if (rpm !== null) { cur.rpmMin = Math.min(cur.rpmMin ?? rpm, rpm); cur.rpmMax = Math.max(cur.rpmMax ?? rpm, rpm); }
       if (!worst || kr > worst.kr) worst = { kr: +kr.toFixed(2), rpm, load: y, iat, spark: adv, tps };
     } else if (cur) { events.push(cur); cur = null; }
@@ -1223,6 +1244,7 @@ export function analyzeSpark(parsed, ch, channelUnits, opts = {}) {
   const round = (v, d = 2) => (v == null ? null : +v.toFixed(d));
   const evs = events.map(e => ({
     samples: e.samples, peakKr: round(e.peakKr), rpm: e.rpmAt,
+    t: num(parsed.rows[e.peakRow], ch.time ?? parsed.timeIdx),
     rpmRange: e.rpmMin === e.rpmMax ? `${e.rpmMin}` : `${e.rpmMin}–${e.rpmMax}`,
     load: round(e.load, 1), iat: round(e.iat, 1), ect: round(e.ect, 1),
     tps: round(e.tps, 1), sparkAtPeak: round(e.spark, 1),
@@ -1305,7 +1327,7 @@ export function analyzeSpark(parsed, ch, channelUnits, opts = {}) {
 // never fill both mixture roles.
 export const ROLE_UNITS = {
   tps: ["%"], ltft: ["%"], stft: ["%"], knockRetard: ["°"], spark: ["°"],
-  mafHz: ["Hz"], rpm: ["RPM"], moduleVoltage: ["V"],
+  mafHz: ["Hz"], rpm: ["RPM"], moduleVoltage: ["V"], injectorPw: ["ms"],
   map: "pressure", ect: "temperature", iat: "temperature", mafGs: "airflow", dynAir: "airflow",
   commandedAfr: ["λ", "AFR", "EQ", "eq"], widebandAfr: ["λ", "AFR", "EQ", "eq"],
 };
@@ -1416,7 +1438,9 @@ export function analyze(text, opts = {}) {
     const i = Array.isArray(idx) ? idx[0] : idx;
     const header = parsed.headers[i];
     const u = header ? detectUnit(header) : null;
-    channelUnits[role] = { column: header, unit: u?.unit ?? null, quantity: u?.quantity ?? null, convertible: !!u?.convertible };
+    // bracketed text that is not a unit we recognise ("(SAE)", "(wideband)") is
+    // part of the name — reporting it as the unit told the user something false
+    channelUnits[role] = { column: header, unit: u?.known === false ? null : (u?.unit ?? null), quantity: u?.quantity ?? null, convertible: !!u?.convertible };
   }
 
   // Rows written after the PCM stopped answering are removed before ANY
@@ -1460,8 +1484,13 @@ export function analyze(text, opts = {}) {
   const spark = analyzeSpark(parsed, ch, channelUnits, ctx);
   if (spark.krSignNote) filtered.warnings.push(`“${spark.krChannel}” ${spark.krSignNote}`);
   const yRole = ch.map !== undefined ? "map" : "load";
+  const timeline = buildEvents(full, parsed, ch, channelUnits, { silence, spark, wideband, scales, opts: ctx });
+  const math = opts.formulas ? mathChannels(parsed, ch, channelUnits, opts.formulas,
+    { scales, stoichs: resolveStoichs(parsed, ch, opts) }) : null;
   return {
     headers: parsed.headers,
+    timeline,
+    math,
     channels: Object.fromEntries(Object.entries(ch).map(([k, v]) =>
       [k, Array.isArray(v) ? v.map(i => parsed.headers[i]) : parsed.headers[v]])),
     channelUnits,
@@ -1691,4 +1720,237 @@ export function analyzeVE(parsed, ch, channelUnits, opts = {}) {
     units: { load: "kPa", rpm: "RPM", multiplier: "dimensionless ratio", change: "%" },
     note: "Multiply the VE cell by the multiplier — measured richer than commanded means VE is over-estimating air and must come down. Cells below the sample threshold are shown but should not be applied. Draft readings: confirm the wideband's scale and your fuel before touching a table, and change one region at a time.",
   };
+}
+
+// ---------- event timeline ----------
+// Where in the log things happened, as markers a person can click. Borrowed
+// from log viewers (Datazap, NorCal's LogApp): an event is only useful if you
+// can see every channel at that instant, so each carries a snapshot.
+// Built from what the analysis already found — nothing new is inferred here.
+export const EVENT_TYPES = {
+  knock:   { label: "Knock retard",                   short: "Knock",        severity: 3 },
+  lean:    { label: "Lean of commanded (enrichment)", short: "Lean",         severity: 3 },
+  silent:  { label: "PCM not reporting",              short: "PCM silent",   severity: 1 },
+  warmup:  { label: "Warm-up / O2 sensors not ready", short: "Warm-up",      severity: 1 },
+  dfco:    { label: "Decel fuel cut",                 short: "Decel cut",    severity: 0 },
+  wbOff:   { label: "Wideband off or heating",        short: "Wideband off", severity: 1 },
+  session: { label: "New logging session",            short: "Session",      severity: 0 },
+};
+const MAX_EVENTS = 150;
+
+export function buildEvents(full, parsed, ch, channelUnits, { silence, spark, wideband, scales, opts = {} } = {}) {
+  const ti = ch.time ?? parsed.timeIdx;
+  if (ti === undefined || ti < 0) return { events: [], types: EVENT_TYPES, durationSec: null };
+  const times = parsed.rows.map(r => num(r, ti));
+  const fullTimes = full.rows.map(r => num(r, ti));
+  const t0 = fullTimes.find(t => t !== null) ?? 0;
+  const tLast = [...fullTimes].reverse().find(t => t !== null) ?? t0;
+  const nearest = t => {
+    let lo = 0, hi = times.length - 1;
+    while (lo < hi) { const mid = (lo + hi) >> 1; if ((times[mid] ?? -Infinity) < t) lo = mid + 1; else hi = mid; }
+    if (lo > 0 && Math.abs((times[lo - 1] ?? Infinity) - t) < Math.abs((times[lo] ?? Infinity) - t)) lo--;
+    return parsed.rows[lo];
+  };
+  const snapshot = t => {
+    const row = nearest(t);
+    if (!row) return [];
+    return parsed.headers.map((h, i) => ({ channel: h, value: row[i] }))
+      .filter(x => x.value !== null && x.value !== undefined && x.value !== "")
+      .map(x => ({ ...x, value: typeof x.value === "number" ? +x.value.toFixed(3) : x.value }));
+  };
+  const ev = (type, t, tEnd, detail, weight = 0) => ({ type, t: +t.toFixed(2), tEnd: tEnd != null ? +tEnd.toFixed(2) : null,
+    label: EVENT_TYPES[type].label, severity: EVENT_TYPES[type].severity, detail, weight });
+  const out = [];
+
+  for (const e of spark?.events || []) if (e.t != null)
+    out.push(ev("knock", e.t, null, `${e.peakKr}° retard at ${e.rpm} RPM${e.load != null ? `, ${e.load} ${spark.yUnit || ""}` : ""}`, e.peakKr));
+  for (const r of wideband?.leanRuns || [])
+    out.push(ev("lean", r.t, r.tEnd > r.t ? r.tEnd : null, `λ ${r.worstLambda}${r.commanded != null ? ` against λ ${r.commanded} commanded` : ""} at ${Math.round(r.rpm)} RPM, ${r.samples} sample(s)`,
+      r.commanded ? r.worstLambda / r.commanded : r.worstLambda));
+  for (const r of wideband?.sensorInvalid?.runs || [])
+    out.push(ev("wbOff", r.t, r.tEnd > r.t ? r.tEnd : null, "readings richer than λ 0.60 — the controller, not the engine", r.tEnd - r.t));
+
+  // PCM-silent stretches, from the rows removed before analysis
+  if (silence?.dead?.size) {
+    let start = null, prev = null;
+    const close = () => { if (start !== null) out.push(ev("silent", start, prev > start ? prev : null, `no fresh data from ${start.toFixed(1)} s to ${prev.toFixed(1)} s`, prev - start)); start = null; };
+    full.rows.forEach((r, i) => {
+      const t = fullTimes[i];
+      if (t === null) return;
+      if (silence.dead.has(i)) { if (start === null) start = t; prev = t; } else close();
+    });
+    close();
+  }
+
+  // warm-up and decel-cut periods, from the loop status where it was logged
+  const loop = makeLoopReader(parsed, ch);
+  if (loop) {
+    const isWarmup = makeWarmupTest(parsed, ch, channelUnits, opts);
+    const cmdScale = scales?.cmd?.scale;
+    const pcm = cmdScale === "afr" ? resolveStoichs(parsed, ch, opts).pcm?.value : null;
+    const open = { warmup: null, dfco: null };
+    const flush = (type, tEnd) => {
+      const o = open[type]; if (!o) return;
+      if (tEnd - o >= 1) out.push(ev(type, o, tEnd, `${(tEnd - o).toFixed(1)} s`, tEnd - o));
+      open[type] = null;
+    };
+    parsed.rows.forEach((row, i) => {
+      const t = times[i]; if (t === null) return;
+      const s = loop(row);
+      const cmd = ch.commandedAfr !== undefined ? toLambda(num(row, ch.commandedAfr), cmdScale, pcm) : null;
+      const states = {
+        warmup: !!s && isWarmup(s, row),
+        dfco: !!s && !s.closed && s.reason === "accelDecel" && cmd !== null && Math.abs(cmd - 1) <= 0.02,
+      };
+      for (const type of ["warmup", "dfco"]) {
+        if (states[type] && open[type] === null) open[type] = t;
+        else if (!states[type] && open[type] !== null) flush(type, t);
+      }
+    });
+    for (const type of ["warmup", "dfco"]) flush(type, times.filter(t => t !== null).at(-1) ?? 0);
+  }
+
+  for (const b of parsed.resampled?.sessionBoundaries || [])
+    out.push(ev("session", b, null, "the logger restarted; time continues from the previous session", 0));
+
+  // keep the most important of each type within the cap, then order by time
+  const byType = {};
+  for (const e of out) (byType[e.type] ??= []).push(e);
+  const share = Math.max(10, Math.floor(MAX_EVENTS / Math.max(1, Object.keys(byType).length)));
+  const kept = Object.values(byType).flatMap(list => list.sort((a, b) => b.weight - a.weight).slice(0, share));
+  const dropped = out.length - kept.length;
+  kept.sort((a, b) => a.t - b.t);
+  for (const e of kept) { e.snapshot = snapshot(e.t); delete e.weight; }
+  return { events: kept, dropped, types: EVENT_TYPES, startSec: +t0.toFixed(2), durationSec: +(tLast - t0).toFixed(2) };
+}
+
+// ---------- before / after: two logs compared ----------
+// "Did v002 fix it?" — the question every revision exists to answer, and one
+// only this app can ask directly, because every log here names its revision.
+// Only like is compared with like: a MAF bin, a WOT RPM band, a knock count.
+// Anything one log covers and the other does not is reported, not compared.
+const revOf = file => String(file || "").match(/_(v\d{3})_/)?.[1] || null;
+
+export function compareAnalyses(a, b, { fileA = "", fileB = "" } = {}) {
+  const round = (v, d = 2) => (v == null ? null : +v.toFixed(d));
+  const warnings = [];
+  const binsA = new Map((a.mafBins?.bins || []).filter(x => x.enoughData).map(x => [x.from, x]));
+  const binsB = new Map((b.mafBins?.bins || []).filter(x => x.enoughData).map(x => [x.from, x]));
+  const maf = [...new Set([...binsA.keys(), ...binsB.keys()])].sort((x, y) => x - y).map(from => {
+    const x = binsA.get(from), y = binsB.get(from);
+    return { from, to: (x || y).to, nA: x?.n ?? null, nB: y?.n ?? null,
+             trimA: x?.avgTotal ?? null, trimB: y?.avgTotal ?? null,
+             delta: x && y ? round(y.avgTotal - x.avgTotal) : null,
+             // closer to zero is better: the PCM is correcting less
+             better: x && y ? Math.abs(y.avgTotal) < Math.abs(x.avgTotal) : null };
+  });
+  const onlyOne = maf.filter(m => m.delta === null).length;
+  if (onlyOne) warnings.push(`${onlyOne} MAF bin(s) have enough samples in only one of the two logs — shown, not compared. The logs covered different conditions there.`);
+
+  const wotA = new Map((a.wideband?.wot || []).map(x => [x.from, x]));
+  const wotB = new Map((b.wideband?.wot || []).map(x => [x.from, x]));
+  const wot = [...new Set([...wotA.keys(), ...wotB.keys()])].sort((x, y) => x - y).map(from => {
+    const x = wotA.get(from), y = wotB.get(from);
+    return { from, to: (x || y).to, nA: x?.n ?? null, nB: y?.n ?? null,
+             errorA: x?.errorPct ?? null, errorB: y?.errorPct ?? null,
+             leanA: x?.lean ?? null, leanB: y?.lean ?? null,
+             delta: x?.errorPct != null && y?.errorPct != null ? round(y.errorPct - x.errorPct, 1) : null };
+  });
+  if (!a.wideband?.present || !b.wideband?.present) warnings.push("Only one of the logs has a wideband, so enrichment cannot be compared.");
+
+  const knock = s => ({ samples: s?.krSamples ?? null, events: s?.eventCount ?? null, worst: s?.worst?.kr ?? null, present: !!s?.hasKnockChannel });
+  const cl = w => w?.closedLoopCheck ? { errorPct: w.closedLoopCheck.errorPct, samples: w.closedLoopCheck.samples } : null;
+
+  return {
+    a: { file: fileA, rev: revOf(fileA), rows: a.rowCount, usable: a.keptCount },
+    b: { file: fileB, rev: revOf(fileB), rows: b.rowCount, usable: b.keptCount },
+    maf, wot,
+    knock: { a: knock(a.spark), b: knock(b.spark) },
+    closedLoop: { a: cl(a.wideband), b: cl(b.wideband) },
+    leanSamples: { a: a.wideband?.leanWotSamples ?? null, b: b.wideband?.leanWotSamples ?? null,
+                   wotA: a.wideband?.wotSamples ?? null, wotB: b.wideband?.wotSamples ?? null },
+    warnings,
+    units: { trim: "%", error: "% leaner than commanded (positive = lean)", knock: "° crank", maf: "Hz", rpm: "RPM" },
+    note: "Before/after comparison of two logs. A change only shows its effect where both logs covered the same conditions. Draft readings.",
+  };
+}
+
+// ---------- math channels ----------
+// Your User Math formulas, evaluated against a log. Borrowed from MegaLogViewer
+// and LibreTune. VCM Scanner references ([50030.92]) resolve through the
+// parameter-ID row HP Tuners exports carry; plain names (RPM, LTFT) through the
+// channels the analysis already identified. Nothing is guessed: a formula with
+// an input this log lacks is listed with the reason, never computed from zeros.
+//
+// Names that imply a SCALE are converted, never passed raw. The seed formula
+// (WB_AFR − Commanded_AFR) / Commanded_AFR × 100 came out at 1376% on a real
+// log: commanded was logged in λ (≈1.0) and subtracted from a wideband in AFR
+// (≈14.7). Every *_AFR input is now λ × ONE stoich (the wideband's display
+// stoich), so two AFRs always compare; *_LAMBDA inputs are plain λ.
+const NAME_ROLES = {
+  rpm: "rpm", ltft: "ltft", stft: "stft", ect: "ect", iat: "iat", tps: "tps", map: "map",
+  maf_hz: "mafHz", maf: "mafGs", kr: "knockRetard", knock: "knockRetard", spark: "spark",
+  ipw_ms: "injectorPw", ipw: "injectorPw", dynair: "dynAir", load: "load",
+  wb_afr: { role: "widebandAfr", as: "afr" }, wb_lambda: { role: "widebandAfr", as: "lambda" },
+  commanded_afr: { role: "commandedAfr", as: "afr" }, commanded_lambda: { role: "commandedAfr", as: "lambda" },
+};
+
+export function mathChannels(parsed, ch, channelUnits, formulas, { scales = null, stoichs = null } = {}) {
+  const computed = [], skipped = [];
+  const ids = parsed.parameterIds || [];
+  for (const f of formulas || []) {
+    const base = { id: f.id, name: f.name, expression: f.expression, unit: f.units || "" };
+    const platform = f.platform || "any";
+    if (platform !== "any") { skipped.push({ ...base, reason: `tagged for ${platform} — retag it as “any” once it is verified on this vehicle` }); continue; }
+    const c = compile(f.expression);
+    if (!c.ok) { skipped.push({ ...base, reason: `the formula ${c.error}` }); continue; }
+    if (!c.vars.length && !c.refs.length) { skipped.push({ ...base, reason: "has no inputs" }); continue; }
+
+    // resolve every input to a column (or the bank average for trims)
+    const inputs = {}, caveats = [], missing = [];
+    for (const r of c.refs) {
+      const col = ids.indexOf(r.parameterID);
+      if (col < 0) { missing.push(r.token); continue; }
+      inputs[r.token] = [col];
+      if (r.unitId) caveats.push(`${r.token}: unit code ${r.unitId} cannot be checked against the log's unit (${detectUnit(parsed.headers[col])?.unit || "not stated"})`);
+    }
+    const convertFor = {};
+    for (const v of c.vars) {
+      const spec = NAME_ROLES[v.toLowerCase()] || (ch[v] !== undefined ? v : null);
+      const role = typeof spec === "object" && spec ? spec.role : spec;
+      const idx = role ? ch[role] : undefined;
+      if (idx === undefined) { missing.push(v); continue; }
+      inputs[v] = [].concat(idx);
+      if (spec?.as) {
+        const sc = role === "widebandAfr" ? scales?.wb : scales?.cmd;
+        const stoich = role === "widebandAfr" ? stoichs?.wb?.value : stoichs?.pcm?.value;
+        const basis = stoichs?.wb?.value;
+        if (!sc || !["lambda", "eq", "afr", "ratio-ambiguous"].includes(sc.scale) || (sc.scale === "afr" && !stoich) || (spec.as === "afr" && !basis)) {
+          missing.push(`${v} (its scale or stoich could not be established)`); continue;
+        }
+        convertFor[v] = raw => { const l = toLambda(raw, sc.scale, stoich); return l === null ? null : spec.as === "afr" ? l * basis : l; };
+        if (spec.as === "afr") caveats.push(`${v} expressed as λ × ${basis} (the wideband's display stoich), so every AFR in the formula is on one basis`);
+      }
+    }
+    if (missing.length) { skipped.push({ ...base, reason: `needs ${missing.join(", ")}, which this log does not have` }); continue; }
+
+    let n = 0, sum = 0, min = Infinity, max = -Infinity;
+    for (const row of parsed.rows) {
+      const env = {};
+      for (const [k, cols] of Object.entries(inputs)) {
+        const vals = cols.map(i => num(row, i)).filter(x => x !== null);
+        let v = vals.length === cols.length && vals.length ? vals.reduce((p, q) => p + q, 0) / vals.length : null;
+        if (v !== null && convertFor[k]) v = convertFor[k](v);
+        env[k] = v;
+      }
+      const v = c.eval(env);
+      if (!Number.isFinite(v)) continue;
+      n++; sum += v; if (v < min) min = v; if (v > max) max = v;
+    }
+    if (!n) { skipped.push({ ...base, reason: "its inputs never appear together on one row of this log" }); continue; }
+    computed.push({ ...base, samples: n, min: +min.toFixed(3), avg: +(sum / n).toFixed(3), max: +max.toFixed(3),
+                    inputs: Object.fromEntries(Object.entries(inputs).map(([k, cols]) => [k, cols.map(i => parsed.headers[i]).join(" + ")])),
+                    status: f.status || "unverified", caveats });
+  }
+  return { computed, skipped, note: "Computed from your formulas on this log's rows. Unverified formulas stay unverified — check one against a known value before trusting it." };
 }

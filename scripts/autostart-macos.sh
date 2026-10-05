@@ -51,6 +51,11 @@ install)
         <string>$PORT</string>
         <key>TUNING_REPO</key>
         <string>$REPO</string>
+        <!-- launchd's own PATH lacks Homebrew, so tools the app calls (gh for
+             sharing a log) were "not installed" under the agent while working
+             in a Terminal. Record the PATH the agent was installed from. -->
+        <key>PATH</key>
+        <string>$(dirname "$NODE"):$PATH</string>
     </dict>
 
     <!-- Start at login and relaunch if it ever exits -->

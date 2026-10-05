@@ -15,13 +15,16 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import crypto from "node:crypto";
 import { analyzeBuffer } from "./modules/index.mjs";
-import { analyze as analyzeLog, FUELS, parseCsv, normalizeTime } from "./modules/loganalysis.mjs";
+import { analyze as analyzeLog, FUELS, parseCsv, normalizeTime, compareAnalyses } from "./modules/loganalysis.mjs";
+import { logReport, logCompareReport, vehicleReport, binCompareReport } from "./modules/report.mjs";
+import { scrubText, vinInName } from "./modules/scrub.mjs";
+import { PROJECT, STORE, vehicleFields, buildIssue, prefillUrl, ghReady, postWithGh } from "./modules/submission.mjs";
 import { parseXdf, readTable, diffTables } from "./modules/xdf.mjs";
 import { detectUnit, convert, DEFAULT_PREFERENCES, QUANTITIES } from "./modules/units.mjs";
 import * as scanner from "./modules/vcmscanner.mjs";
 
 const execFileP = promisify(execFile);
-const APP_VERSION = "0.45.0"; // keep in step with CHANGELOG.md — CI enforces the match
+const APP_VERSION = "0.46.0"; // keep in step with CHANGELOG.md — CI enforces the match
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(process.env.TUNING_REPO || path.join(__dirname, ".."));
 const PUBLIC = path.join(__dirname, "public");
@@ -602,6 +605,90 @@ async function writeUserMath(data) {
   await fsp.writeFile(USER_MATH, JSON.stringify(data, null, 2) + "\n");
 }
 
+// ---------- log analysis options, from a request's query string ----------
+// One reader for the analysis, the compare and the report, so a report always
+// shows exactly what the screen did.
+async function logOpts(q) {
+  // channel overrides arrive as ch_<role>=<column index>
+  const channels = {};
+  for (const [k, v] of q.entries()) {
+    if (!k.startsWith("ch_")) continue;
+    const role = k.slice(3);
+    channels[role] = (role === "ltft" || role === "stft") ? v.split(",").map(Number) : Number(v);
+  }
+  const opts = { channels };
+  if (q.get("binSize")) opts.binSize = Number(q.get("binSize"));
+  if (q.get("minSamples")) opts.minSamples = Number(q.get("minSamples"));
+  const filters = {};
+  for (const f of ["minEct", "maxTpsDelta", "maxRpmDelta", "minRpm"]) if (q.get(f)) filters[f] = Number(q.get(f));
+  if (q.get("requireClosedLoop") === "0") filters.requireClosedLoop = false;
+  if (q.get("excludePe") === "0") filters.excludePe = false;
+  if (q.get("minEctUnit")) filters.minEctUnit = q.get("minEctUnit");
+  if (Object.keys(filters).length) opts.filters = filters;
+  // wideband options: fuel decides the lambda↔AFR conversion, scale resolves
+  // the lambda-vs-EQ ambiguity a log can't express
+  const prefsNow = await readPrefs();
+  opts.fuel = q.get("fuel") || prefsNow.fuel || "gasoline";
+  for (const k of ["widebandScale", "commandedScale"]) if (q.get(k)) opts[k] = q.get(k);
+  for (const k of ["wotTps", "wotLeanLambda", "wotLeanMarginPct", "widebandStoich", "pcmStoich"])
+    if (q.get(k)) opts[k] = Number(q.get(k));
+  // your User Math formulas, evaluated as math channels; a broken formula file
+  // must not take the analysis down with it
+  try { opts.formulas = (await readUserMath()).parameters; } catch (e) { console.error(`math channels skipped: ${e.message}`); }
+  return opts;
+}
+
+// ---------- bin compare (shared by the compare view and its report) ----------
+async function compareBins(pa, pb, xdfQuery) {
+  const [bufA, bufB] = await Promise.all([fsp.readFile(pa), fsp.readFile(pb)]);
+  const anA = analyzeBuffer(bufA), anB = analyzeBuffer(bufB);
+  const minLen = Math.min(bufA.length, bufB.length);
+  let totalDiff = 0;
+  for (let i = 0; i < minLen; i++) if (bufA[i] !== bufB[i]) totalDiff++;
+  totalDiff += Math.abs(bufA.length - bufB.length);
+  const out = {
+    comparable: true,
+    a: { file: path.relative(REPO, pa), size: bufA.length, osId: anA?.osId, sha256: crypto.createHash("sha256").update(bufA).digest("hex") },
+    b: { file: path.relative(REPO, pb), size: bufB.length, osId: anB?.osId, sha256: crypto.createHash("sha256").update(bufB).digest("hex") },
+    identical: bufA.length === bufB.length && totalDiff === 0,
+    totalBytesChanged: totalDiff,
+    sizeMismatch: bufA.length !== bufB.length,
+  };
+  // Table-level diff when a definition is supplied (or auto-found for this OS)
+  let xdfPath = xdfQuery;
+  if (!xdfPath && anA?.osId && anA.osId === anB?.osId) {
+    const dir = path.join(REPO, "definitions", String(anA.osId));
+    const cand = (await listFiles(dir)).find(f => f.name.toLowerCase().endsWith(".xdf"));
+    if (cand) xdfPath = path.join("definitions", String(anA.osId), cand.name);
+  }
+  if (xdfPath) {
+    try {
+      const xdf = parseXdf(await fsp.readFile(safeJoin(REPO, xdfPath), "utf8"));
+      out.tableDiff = { xdf: xdfPath, ...diffTables(bufA, bufB, xdf) };
+    } catch (e) { out.tableDiff = { error: "XDF parse failed: " + e.message, xdf: xdfPath }; }
+  }
+
+  if (anA?.segments && !out.sizeMismatch) {
+    const diffIn = (start, len) => {
+      let n = 0;
+      const end = Math.min(start + len, minLen);
+      for (let i = start; i < end; i++) if (bufA[i] !== bufB[i]) n++;
+      return n;
+    };
+    const os2len = anA.pcm === "P59" ? 0xdfffe : 0x5fffe;
+    out.regions = [
+      { name: "OS header/cal (0x0-0x4000)", bytesChanged: diffIn(0, 0x4000) },
+      { name: "EEPROM data (VIN/serial)", bytesChanged: diffIn(0x4000, 0x4000) },
+      { name: "OS segment 2", bytesChanged: diffIn(0x20000, os2len) },
+      ...anA.segments.filter(s => !s.error).map(s => ({
+        name: s.name, bytesChanged: diffIn(s.start, s.length),
+        calIdA: s.calId, calIdB: anB?.segments?.find(x => x.name === s.name)?.calId,
+      })),
+    ];
+  }
+  return out;
+}
+
 // ---------- routes ----------
 
 async function handleApi(req, res, url) {
@@ -679,53 +766,7 @@ async function handleApi(req, res, url) {
     if (!fs.existsSync(pa) || !fs.existsSync(pb)) return send(404, { error: "one or both files not found" });
     if (![pa, pb].every(p => p.toLowerCase().endsWith(".bin")))
       return send(200, { comparable: false, reason: "compare works on raw .bin files only" });
-    const [bufA, bufB] = await Promise.all([fsp.readFile(pa), fsp.readFile(pb)]);
-    const anA = analyzeBuffer(bufA), anB = analyzeBuffer(bufB);
-    const minLen = Math.min(bufA.length, bufB.length);
-    let totalDiff = 0;
-    for (let i = 0; i < minLen; i++) if (bufA[i] !== bufB[i]) totalDiff++;
-    totalDiff += Math.abs(bufA.length - bufB.length);
-    const out = {
-      comparable: true,
-      a: { file: path.relative(REPO, pa), size: bufA.length, osId: anA?.osId, sha256: crypto.createHash("sha256").update(bufA).digest("hex") },
-      b: { file: path.relative(REPO, pb), size: bufB.length, osId: anB?.osId, sha256: crypto.createHash("sha256").update(bufB).digest("hex") },
-      identical: bufA.length === bufB.length && totalDiff === 0,
-      totalBytesChanged: totalDiff,
-      sizeMismatch: bufA.length !== bufB.length,
-    };
-    // Table-level diff when a definition is supplied (or auto-found for this OS)
-    let xdfPath = q.get("xdf");
-    if (!xdfPath && anA?.osId && anA.osId === anB?.osId) {
-      const dir = path.join(REPO, "definitions", String(anA.osId));
-      const cand = (await listFiles(dir)).find(f => f.name.toLowerCase().endsWith(".xdf"));
-      if (cand) xdfPath = path.join("definitions", String(anA.osId), cand.name);
-    }
-    if (xdfPath) {
-      try {
-        const xdf = parseXdf(await fsp.readFile(safeJoin(REPO, xdfPath), "utf8"));
-        out.tableDiff = { xdf: xdfPath, ...diffTables(bufA, bufB, xdf) };
-      } catch (e) { out.tableDiff = { error: "XDF parse failed: " + e.message, xdf: xdfPath }; }
-    }
-
-    if (anA?.segments && !out.sizeMismatch) {
-      const diffIn = (start, len) => {
-        let n = 0;
-        const end = Math.min(start + len, minLen);
-        for (let i = start; i < end; i++) if (bufA[i] !== bufB[i]) n++;
-        return n;
-      };
-      const os2len = anA.pcm === "P59" ? 0xdfffe : 0x5fffe;
-      out.regions = [
-        { name: "OS header/cal (0x0-0x4000)", bytesChanged: diffIn(0, 0x4000) },
-        { name: "EEPROM data (VIN/serial)", bytesChanged: diffIn(0x4000, 0x4000) },
-        { name: "OS segment 2", bytesChanged: diffIn(0x20000, os2len) },
-        ...anA.segments.filter(s => !s.error).map(s => ({
-          name: s.name, bytesChanged: diffIn(s.start, s.length),
-          calIdA: s.calId, calIdB: anB?.segments?.find(x => x.name === s.name)?.calId,
-        })),
-      ];
-    }
-    return send(200, out);
+    return send(200, await compareBins(pa, pb, q.get("xdf")));
   }
 
   // ----- upload (raw body; metadata in query) -----
@@ -952,6 +993,66 @@ async function handleApi(req, res, url) {
   // everything below has a JSON body
   const jsonBody = async () => JSON.parse((await readBody(req)).toString("utf8") || "{}");
 
+  // ----- share a log: scrub it, package it outside the repo, preview it -----
+  if (req.method === "POST" && url.pathname === "/api/submission/prepare") {
+    const b = await jsonBody();
+    const p = safeJoin(REPO, b.path || "");
+    if (!fs.existsSync(p) || !p.toLowerCase().endsWith(".csv")) return send(404, { error: "that log does not exist or is not a CSV" });
+    const name = path.basename(p);
+    if (vinInName(name)) return send(400, { error: "the file NAME looks like it contains a VIN, and it would appear in the public issue — rename the file first" });
+    const { text, findings } = scrubText(await fsp.readFile(p, "utf8"));
+    const r = analyzeLog(text, {});
+    if (r.error) return send(400, { error: `the analyser could not read this file: ${r.error}` });
+    const vid = path.relative(REPO, p).split(path.sep)[1] || "";
+    const fields = vehicleFields(await readText(path.join(REPO, "vehicles", vid, "vehicle.md")).catch(() => ""));
+    const wideband = r.wideband?.present ? `${r.wideband.channel} (read as ${r.wideband.scale.scale})` : "";
+    const issue = buildIssue(r, { file: name, ...fields });
+    const id = `${new Date().toISOString().replace(/[:.]/g, "-")}_${slug(name.replace(/\.csv$/i, ""))}`;
+    await fsp.mkdir(STORE, { recursive: true });
+    const dir = inside(STORE, id);
+    await fsp.mkdir(dir, { recursive: true });
+    await fsp.writeFile(inside(dir, name), text);
+    await fsp.writeFile(inside(dir, "issue.json"), JSON.stringify({ ...issue, ...fields, wideband, file: name }, null, 2));
+    const gh = ghReady();
+    return send(200, {
+      id, title: issue.title, body: issue.body, redactions: findings, scrubbedName: name, size: Buffer.byteLength(text),
+      platform: fields.platform, vehicle: fields.vehicle, wideband, project: PROJECT,
+      prefillUrl: prefillUrl(PROJECT, { title: issue.title, ...fields, wideband }), gh,
+    });
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/submission/post") {
+    const b = await jsonBody();
+    if (!/^[\w-]{6,80}$/.test(b.id || "")) return send(400, { error: "bad submission id" });
+    if (!b.confirmed) return send(400, { error: "the four confirmations are required before posting" });
+    const dir = inside(STORE, b.id);
+    if (!fs.existsSync(dir)) return send(404, { error: "no such submission — prepare it again" });
+    const gh = ghReady();
+    if (!gh.ready) return send(400, { error: `${gh.why}. Use “Open GitHub's form” instead.` });
+    const meta = JSON.parse(await fsp.readFile(inside(dir, "issue.json"), "utf8"));
+    const what = String(b.what || "").trim();
+    const body = what ? meta.body.replace("<!-- what you were doing, and what looks wrong -->", what) : meta.body;
+    const r = postWithGh({ csvPath: inside(dir, meta.file), title: meta.title, body, project: PROJECT });
+    if (!r.ok) return send(502, { error: r.error, gistUrl: r.gistUrl });
+    await fsp.writeFile(inside(dir, "posted.json"), JSON.stringify(r, null, 2));
+    return send(200, r);
+  }
+
+  // ----- save a report into the vehicle's reports/ folder -----
+  if (req.method === "POST" && url.pathname === "/api/report/save") {
+    const b = await jsonBody();
+    const vdir = safeJoin(REPO, path.join("vehicles", b.vehicle || ""));
+    if (!b.vehicle || !fs.existsSync(vdir)) return send(400, { error: `unknown vehicle: ${b.vehicle}` });
+    if (!/^[\w.-]{1,120}\.md$/.test(b.filename || "")) return send(400, { error: "report file name must be letters, digits, dots, dashes and end in .md" });
+    if (typeof b.markdown !== "string" || !b.markdown.trim()) return send(400, { error: "empty report" });
+    const dir = path.join(vdir, "reports");
+    await fsp.mkdir(dir, { recursive: true });
+    let dest = inside(dir, b.filename), n = 2;
+    while (fs.existsSync(dest)) dest = inside(dir, b.filename.replace(/\.md$/, `-${n++}.md`));
+    await fsp.writeFile(dest, b.markdown);
+    return send(200, { saved: path.relative(REPO, dest) });
+  }
+
   // ----- changelog entry (prepended below the --- separator) -----
   if (req.method === "POST" && url.pathname === "/api/changelog") {
     const b = await jsonBody();
@@ -1161,31 +1262,73 @@ async function handleApi(req, res, url) {
     if (path.extname(p).toLowerCase() !== ".csv")
       return send(200, { ok: false, reason: "analysis needs a CSV — export one from VCM Scanner (Scan → Export)" });
     if (!fs.existsSync(p)) return send(404, { error: "file not found" });
-    const text = await fsp.readFile(p, "utf8");
-    // channel overrides arrive as ch_<role>=<column index>
-    const channels = {};
-    for (const [k, v] of q.entries()) {
-      if (!k.startsWith("ch_")) continue;
-      const role = k.slice(3);
-      channels[role] = (role === "ltft" || role === "stft") ? v.split(",").map(Number) : Number(v);
+    return send(200, { ok: true, file: path.relative(REPO, p), preferences: await readPrefs(),
+                       ...analyzeLog(await fsp.readFile(p, "utf8"), await logOpts(q)) });
+  }
+
+  // ----- before / after: two logs of the same vehicle -----
+  if (req.method === "GET" && url.pathname === "/api/logcompare") {
+    const pa = safeJoin(REPO, q.get("a") || ""), pb = safeJoin(REPO, q.get("b") || "");
+    if (![pa, pb].every(p => fs.existsSync(p) && p.toLowerCase().endsWith(".csv"))) return send(404, { error: "both logs must exist and be CSV files" });
+    const opts = await logOpts(q);
+    const [ra, rb] = [analyzeLog(await fsp.readFile(pa, "utf8"), opts), analyzeLog(await fsp.readFile(pb, "utf8"), opts)];
+    return send(200, { ok: true, ...compareAnalyses(ra, rb, { fileA: path.basename(pa), fileB: path.basename(pb) }) });
+  }
+
+  // ----- reports: markdown, saved or printed -----
+  if (req.method === "GET" && url.pathname === "/api/report") {
+    const meta = { version: APP_VERSION, generated: today() };
+    const kind = q.get("kind");
+    const vehicleOf = rel => rel.split("/")[1] || "";
+    if (kind === "log") {
+      const p = safeJoin(REPO, q.get("path") || "");
+      if (!fs.existsSync(p)) return send(404, { error: "file not found" });
+      const r = analyzeLog(await fsp.readFile(p, "utf8"), await logOpts(q));
+      const file = path.basename(p);
+      return send(200, { markdown: logReport(r, { ...meta, file, rev: file.match(/_(v\d{3})_/)?.[1], vehicle: vehicleOf(path.relative(REPO, p)) }),
+                         filename: file.replace(/\.csv$/i, "") + "_analysis.md", vehicle: vehicleOf(path.relative(REPO, p)) });
     }
-    const opts = { channels };
-    if (q.get("binSize")) opts.binSize = Number(q.get("binSize"));
-    if (q.get("minSamples")) opts.minSamples = Number(q.get("minSamples"));
-    const filters = {};
-    for (const f of ["minEct", "maxTpsDelta", "maxRpmDelta", "minRpm"]) if (q.get(f)) filters[f] = Number(q.get(f));
-    if (q.get("requireClosedLoop") === "0") filters.requireClosedLoop = false;
-    if (q.get("excludePe") === "0") filters.excludePe = false;
-    if (q.get("minEctUnit")) filters.minEctUnit = q.get("minEctUnit");
-    if (Object.keys(filters).length) opts.filters = filters;
-    // wideband options: fuel decides the lambda↔AFR conversion, scale resolves
-    // the lambda-vs-EQ ambiguity a log can't express
-    const prefsNow = await readPrefs();
-    opts.fuel = q.get("fuel") || prefsNow.fuel || "gasoline";
-    for (const k of ["widebandScale", "commandedScale"]) if (q.get(k)) opts[k] = q.get(k);
-    for (const k of ["wotTps", "wotLeanLambda", "wotLeanMarginPct", "widebandStoich", "pcmStoich"])
-      if (q.get(k)) opts[k] = Number(q.get(k));
-    return send(200, { ok: true, file: path.relative(REPO, p), preferences: await readPrefs(), ...analyzeLog(text, opts) });
+    if (kind === "logcompare") {
+      const pa = safeJoin(REPO, q.get("a") || ""), pb = safeJoin(REPO, q.get("b") || "");
+      if (![pa, pb].every(p => fs.existsSync(p))) return send(404, { error: "both logs must exist" });
+      const opts = await logOpts(q);
+      const d = compareAnalyses(analyzeLog(await fsp.readFile(pa, "utf8"), opts), analyzeLog(await fsp.readFile(pb, "utf8"), opts),
+                                { fileA: path.basename(pa), fileB: path.basename(pb) });
+      return send(200, { markdown: logCompareReport(d, { ...meta, vehicle: vehicleOf(path.relative(REPO, pa)) }),
+                         filename: `${today()}_${d.a.rev || "a"}-vs-${d.b.rev || "b"}_compare.md`, vehicle: vehicleOf(path.relative(REPO, pa)) });
+    }
+    if (kind === "vehicle") {
+      const id = q.get("vehicle") || "";
+      if (!fs.existsSync(safeJoin(REPO, path.join("vehicles", id))) || !id) return send(404, { error: `unknown vehicle: ${id}` });
+      return send(200, { markdown: vehicleReport(await vehicleState(id), await buildTimeline(id), meta),
+                         filename: `${today()}_vehicle-history.md`, vehicle: id });
+    }
+    if (kind === "bincompare") {
+      const pa = safeJoin(REPO, q.get("a") || ""), pb = safeJoin(REPO, q.get("b") || "");
+      if (![pa, pb].every(p => fs.existsSync(p) && p.toLowerCase().endsWith(".bin"))) return send(404, { error: "both files must exist and be .bin" });
+      const c = await compareBins(pa, pb, q.get("xdf"));
+      const name = f => path.basename(f).replace(/\.bin$/i, "");
+      return send(200, { markdown: binCompareReport(c, meta), filename: `${name(pa)}_vs_${name(pb)}_bin-compare.md`, vehicle: vehicleOf(path.relative(REPO, pa)) });
+    }
+    if (kind === "session") {
+      const p = safeJoin(REPO, q.get("path") || "");
+      if (!fs.existsSync(p) || !p.endsWith(".md")) return send(404, { error: "session not found" });
+      return send(200, { markdown: await readText(p), filename: path.basename(p), vehicle: vehicleOf(path.relative(REPO, p)) });
+    }
+    return send(400, { error: "kind must be log, logcompare, vehicle, bincompare or session" });
+  }
+
+  // ----- share a log with the project: prepare / download / post -----
+  if (req.method === "GET" && url.pathname === "/api/submission/file") {
+    const id = q.get("id") || "";
+    if (!/^[\w-]{6,80}$/.test(id)) return send(400, { error: "bad submission id" });
+    const dir = inside(STORE, id);
+    const csv = (fs.existsSync(dir) ? fs.readdirSync(dir) : []).find(f => f.endsWith(".csv"));
+    if (!csv) return send(404, { error: "no such submission" });
+    const p = inside(dir, csv);
+    res.writeHead(200, { "content-type": "text/csv", "content-disposition": `attachment; filename="${csv}"`, "cache-control": "no-store" });
+    fs.createReadStream(p).pipe(res);
+    return;
   }
 
   // ----- pre-flash checklist (parsed from the template) -----

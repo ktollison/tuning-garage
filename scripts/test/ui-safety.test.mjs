@@ -12,7 +12,9 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const t = (c, m) => { console.log((c ? "✓ " : "✗ ") + m); if (!c) process.exitCode = 1; };
-const html = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "app", "public", "index.html"), "utf8");
+const PUB = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "app", "public");
+// the page, plus the shared renderer it loads (escaping lives there)
+const html = ["index.html", "markdown.js", "print.html"].map(f => fs.readFileSync(path.join(PUB, f), "utf8")).join("\n");
 
 console.log("— no handler uses the pattern that broke —");
 {
@@ -26,7 +28,7 @@ console.log("— no handler uses the pattern that broke —");
 
 console.log("— jsq survives the browser's decoding, whatever the value —");
 {
-  const grab = name => html.match(new RegExp(`^const ${name} = .*;$`, "m"))?.[0];
+  const grab = name => html.match(new RegExp(`^(?:const|var) ${name} = .*;$`, "m"))?.[0];
   const src = [grab("esc"), grab("jsq")];
   t(src.every(Boolean), "esc and jsq found in the page");
   const { jsq } = new Function(`${src.join("\n")}; return { esc, jsq };`)();

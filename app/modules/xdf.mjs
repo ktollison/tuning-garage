@@ -23,6 +23,8 @@
 // Rather than guess, we default to row-major and set `layoutAmbiguous` on any
 // table with the bit set, so the UI can warn instead of quietly transposing.
 
+import { compile } from "./expr.mjs";
+
 // ---------- minimal XML parser (no dependencies) ----------
 const ENT = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'" };
 const decode = s => s.replace(/&(amp|lt|gt|quot|apos);/g, (_, e) => ENT[e])
@@ -79,54 +81,14 @@ const hex = v => (v == null || v === "" ? null : Number(String(v).trim().startsW
 
 // ---------- safe arithmetic for MATH equations (no eval) ----------
 // Handles the shapes XDFs actually use: X*0.0078125, (X-128)*0.5, X/4+10.
+// The compiler is shared with math channels (expr.mjs), so the unary-minus and
+// power fixes live in one place. Every identifier in an XDF equation is X.
 export function makeEval(equation) {
   if (!equation) return x => x;
-  const tokens = equation.match(/\d*\.?\d+(?:[eE][+-]?\d+)?|[A-Za-z_]\w*|[()+\-*/^]/g);
-  if (!tokens) return x => x;
-  // "neg" is unary minus. It used to be written as "0 - …", which broke after
-  // * or /: X*-2 became (X*0)-2 = -2 instead of -6, and X/-4 divided by zero.
-  // ^ and neg bind right to left (2^3^2 = 2^9, not 8^2).
-  const prec = { "+": 1, "-": 1, "*": 2, "/": 2, neg: 3, "^": 4 };
-  const rightAssoc = new Set(["^", "neg"]);
-  const out = [], ops = [];
-  let prev = null;
-  for (let t of tokens) {
-    if (/^\d|^\./.test(t)) { out.push(parseFloat(t)); }
-    else if (/^[A-Za-z_]/.test(t)) { out.push({ v: t.toUpperCase() }); }
-    else if (t === "(") ops.push(t);
-    else if (t === ")") { while (ops.length && ops.at(-1) !== "(") out.push(ops.pop()); ops.pop(); }
-    else {
-      const unary = (t === "-" || t === "+") && (prev === null || prev === "(" || prec[prev]);
-      if (unary && t === "+") { prev = t; continue; }        // unary plus does nothing
-      if (unary) t = "neg";
-      while (ops.length && ops.at(-1) !== "(" &&
-             (rightAssoc.has(t) ? prec[ops.at(-1)] > prec[t] : prec[ops.at(-1)] >= prec[t])) out.push(ops.pop());
-      ops.push(t);
-    }
-    prev = t;
-  }
-  while (ops.length) out.push(ops.pop());
-
-  return x => {
-    const st = [];
-    for (const t of out) {
-      if (typeof t === "number") st.push(t);
-      else if (typeof t === "object") st.push(x);
-      else if (t === "neg") st.push(-(st.pop() ?? NaN));
-      else {
-        const b = st.pop(), a = st.pop() ?? 0;
-        // Division by zero is undefined, not zero. Returning 0 made a scaling
-        // equation like 1000/X on a raw zero display a plausible-looking 0 in
-        // the table browser and the diff. NaN propagates, and every renderer
-        // shows it as "—".
-        st.push(t === "+" ? a + b : t === "-" ? a - b : t === "*" ? a * b : t === "/" ? (b === 0 ? NaN : a / b) : Math.pow(a, b));
-      }
-    }
-    const r = st.pop();
-    // Not finite means undefined — a division by zero, or an equation that did
-    // not reduce to one value. This used to become 0, which looks like data.
-    return Number.isFinite(r) ? r : NaN;
-  };
+  const c = compile(equation);
+  // an equation we cannot read produces no value rather than a plausible one
+  if (!c.ok) return () => NaN;
+  return x => c.eval(Object.fromEntries(c.vars.map(v => [v, x])));
 }
 
 // ---------- axis / table extraction ----------

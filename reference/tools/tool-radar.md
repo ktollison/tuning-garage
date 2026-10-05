@@ -15,6 +15,12 @@ Researched 2026-08-02; statuses change — check the linked threads.
 | **MegaLogViewer HD** | Log analysis app (CSV) — histograms, scatter, filters, formulas | Much stronger analysis than eyeballing VCM Scanner; eats CSV exports |
 | **Dedicated VPW interfaces** (hardware) | Purpose-built J1850 VPW adapters with 4x support | Faster and more reliable than repurposed generic tools — but prove yours before writing with it |
 
+**Checked 2026-10-04:** PCM Hammer reached **2.0.0** (P08/P11/P12, VIN and
+service-number checks against crossflashing — see [pcmhammer.md](pcmhammer.md)).
+UniversalPatcher publishes no GitHub releases; check universalpatcher.net for
+its history page. Log viewers worth knowing: **Datazap** and NorCal's
+**LogApp** (shareable logs, event markers, comparison overlays).
+
 ## Factory tooling
 
 | Tool | What it is | Why it matters to me |

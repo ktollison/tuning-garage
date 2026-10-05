@@ -113,6 +113,11 @@
   .device-row { background: color-mix(in oklab, var(--accent) 12%, var(--surface)); }
   details summary { cursor: pointer; color: var(--accent); font-size: 13px; margin: 8px 0; }
   @media (max-width: 620px) { .stage { grid-template-columns: 1fr 52px; } .stage > :first-child { grid-column: 1/-1; } }
+  .exportrow { margin: 4px 0 8px; align-items: center; flex-wrap: wrap; }
+  .evmark { cursor: pointer; }
+  .evmark:focus { outline: 2px solid var(--accent); outline-offset: 2px; }
+  #modal { position: fixed; inset: 0; background: rgba(0,0,0,.45); display: grid; place-items: center; z-index: 50; padding: 20px; }
+  .modal-card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 18px 20px; max-width: 720px; width: 100%; max-height: 90vh; overflow: auto; }
 </style>
 </head>
 <body>
@@ -126,16 +131,9 @@
 </div>
 <div class="flash" id="flash"></div>
 
+<script src="markdown.js"></script>
 <script>
 const $ = (s, el=document) => el.querySelector(s);
-const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
-// A value going into an onclick="…" handler. esc() alone is not enough there:
-// the browser decodes &#39; back to ' BEFORE running the handler, so a name
-// containing a quote broke out of the string — a VCM Scanner file named to
-// carry code would have run it. JSON makes a real JS string; esc then makes it
-// safe inside the attribute, and the browser's decoding gives the JSON back.
-const jsq = s => esc(JSON.stringify(String(s ?? "")));
-const unesc = s => String(s).replace(/&(amp|lt|gt|quot|#39);/g, (_, e) => ({ amp: "&", lt: "<", gt: ">", quot: '"', "#39": "'" }[e]));
 const fmtSize = n => n > 1048576 ? (n/1048576).toFixed(1) + " MB" : n > 1024 ? (n/1024).toFixed(0) + " KB" : n + " B";
 const flash = msg => { const f = $("#flash"); f.textContent = msg; f.classList.add("show"); setTimeout(() => f.classList.remove("show"), 2600); };
 
@@ -172,6 +170,19 @@ function vh() { return STATE.vehicles.find(v => v.id === VEHICLE); }
 function render() {
   $("#ver").textContent = STATE.version ? "v" + STATE.version : "";
   $("#ver").title = "Tuning Garage version. To update to a new release: node scripts/update.mjs — see the User Guide, section 9.";
+  renderGitBar();
+
+  $("#nav").innerHTML = TABS.map(([id, name]) =>
+    `<button class="${TAB===id?"on":""}" onclick="TAB=${jsq(id)};location.hash=${jsq(id)};render()">${name}</button>`).join("");
+
+  const views = { garage, overview, tunes, datalogs, sessions, progression, usermath, timeline, scanner, library, platforms };
+  $("#main").innerHTML = views[TAB] ? views[TAB]() : overview();
+}
+
+// Refresh only the git status, leaving whatever is on screen alone.
+async function refreshGitBar() { try { STATE = await api("/api/state"); renderGitBar(); } catch { /* next load() will catch up */ } }
+
+function renderGitBar() {
   const g = STATE.git;
   $("#gitbar").innerHTML = `
     <span class="dot ${g.dirty || g.behind ? "dirty" : ""}"></span>
@@ -182,13 +193,36 @@ function render() {
     window._warnedBehind = true;
     flash(`⚠ This machine is ${g.behind} commit(s) behind GitHub — hit Sync before working, or you'll fork your history.`);
   }
-
-  $("#nav").innerHTML = TABS.map(([id, name]) =>
-    `<button class="${TAB===id?"on":""}" onclick="TAB=${jsq(id)};location.hash=${jsq(id)};render()">${name}</button>`).join("");
-
-  const views = { garage, overview, tunes, datalogs, sessions, progression, usermath, timeline, scanner, library, platforms };
-  $("#main").innerHTML = views[TAB] ? views[TAB]() : overview();
 }
+
+// ---------- exports: save to the repo, download, print to PDF ----------
+// Every report comes from /api/report, so a saved, downloaded and printed copy
+// are the same document. PDF is the browser's own "Save as PDF" on print.html.
+function exportRow(params, label = "this report") {
+  const qs = new URLSearchParams(params).toString();
+  return `<div class="actions exportrow"><span class="note">Export ${esc(label)}:</span>
+    <button class="btn" onclick="saveReport(${jsq(qs)})" title="Write it into this vehicle's reports/ folder, versioned with everything else">Save to repo (.md)</button>
+    <button class="btn" onclick="downloadReport(${jsq(qs)})">Download .md</button>
+    <button class="btn" onclick="printReport(${jsq(qs)})" title="Opens a print view — choose Save as PDF">Print / PDF</button></div>`;
+}
+async function saveReport(qs) {
+  try {
+    const r = await api(`/api/report?${qs}`);
+    const s = await api("/api/report/save", { method: "POST", body: JSON.stringify({ vehicle: r.vehicle || VEHICLE, filename: r.filename, markdown: r.markdown }) });
+    flash(`Saved ${s.saved} — Commit & push to keep it`);
+    refreshGitBar();
+  } catch (e) { flash("Could not save the report: " + e.message); }
+}
+async function downloadReport(qs) {
+  try {
+    const r = await api(`/api/report?${qs}`);
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([r.markdown], { type: "text/markdown" }));
+    a.download = r.filename; a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  } catch (e) { flash("Could not build the report: " + e.message); }
+}
+function printReport(qs) { window.open(`/print.html?${qs}`, "_blank", "noopener"); }
 
 // Always shown, even with one vehicle — otherwise the app looks single-car
 // and nobody discovers that a second one is a click away.
@@ -380,6 +414,11 @@ function overview() {
   </div>
   ${profileEditor(v)}
 
+  <div class="card"><h2>Vehicle history report</h2>
+    <div class="note">Profile, baseline fingerprints, every revision and its changelog entry, the flash log and the gaps worth noticing, in one document — for your records, a buyer, or a tuner you are asking for help. The VIN is never included.</div>
+    ${exportRow({ kind: "vehicle", vehicle: v.id }, "the vehicle history")}
+  </div>
+
   <div class="card"><h2>Recent sessions — ${esc(v.id)}</h2>
     ${v.sessions.length ? v.sessions.slice(0,5).map(s =>
       `<div style="padding:5px 0;border-top:1px solid var(--grid)"><a href="#" onclick="viewFile(${jsq(`vehicles/${v.id}/sessions/${s.name}`)});return false">${esc(s.name)}</a></div>`).join("")
@@ -564,7 +603,8 @@ async function compareBins() {
       ${r.a.osId !== r.b.osId ? ` · <b style="color:var(--warn)">⚠ different OS (${r.a.osId} vs ${r.b.osId})</b>` : ""}</div>
     ${r.regions ? `<table style="margin-top:8px"><tr><th>Region</th><th>Bytes changed</th><th>Cal ID</th></tr>
       ${r.regions.map(g => `<tr ${g.bytesChanged ? "" : `style="opacity:.55"`}><td>${esc(g.name)}</td><td class="num">${g.bytesChanged.toLocaleString()}</td><td class="num">${g.calIdA !== undefined ? (g.calIdA === g.calIdB ? g.calIdA : `<b style="color:var(--warn)">${g.calIdA} → ${g.calIdB}</b>`) : ""}</td></tr>`).join("")}</table>` : ""}
-    ${tableDiffHtml(r.tableDiff)}`;
+    ${tableDiffHtml(r.tableDiff)}
+    ${exportRow({ kind: "bincompare", a, b }, "this comparison")}`;
 }
 
 // One history from files that already carry dates. Fixed hue order per type,
@@ -951,93 +991,6 @@ async function uploadDonor(e) {
   return false;
 }
 
-// Minimal markdown renderer. Everything is HTML-escaped FIRST, then inline
-// rules are applied to the already-escaped text — so a document containing
-// markup renders as visible text and can never inject HTML.
-function renderMarkdown(src, baseDir = "") {
-  const blocks = [];
-  const stash = html => `@@CODEBLOCK${blocks.push(html) - 1}@@`;
-
-  // fenced code first, so nothing inside it gets interpreted
-  let s = String(src).replace(/```[\w-]*\n([\s\S]*?)```/g, (_, code) =>
-    stash(`<pre class="md">${esc(code.replace(/\n$/, ""))}</pre>`));
-  s = esc(s);
-
-  const asset = p => `/api/file?path=${encodeURIComponent((baseDir ? baseDir + "/" : "") + p.replace(/^\.\//, ""))}`;
-  const inline = x => x
-    .replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (_, alt, src) =>
-      `<img src="${/^https?:/.test(src) ? src : asset(src)}" alt="${alt}" loading="lazy" class="mdimg">`)
-    .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_, txt, href) =>
-      /^https?:/.test(href)
-        ? `<a href="${href}" target="_blank" rel="noopener">${txt}</a>`
-        : `<a href="#" onclick="viewDoc(${jsq((baseDir ? baseDir + "/" : "") + unesc(href).replace(/^\.\//, ""))});return false">${txt}</a>`)
-    .replace(/`([^`]+)`/g, "<code>$1</code>")
-    .replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>")
-    .replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<i>$2</i>");
-
-  const out = [];
-  let list = null, inTable = false, para = false;
-  const closeList = () => { if (list) { para = false; out.push(`</${list}>`); list = null; } };
-  const closeTable = () => { if (inTable) { para = false; out.push("</table>"); inTable = false; } };
-
-  for (const raw of s.split("\n")) {
-    const line = raw.trimEnd();
-
-    if (/^@@CODEBLOCK\d+@@$/.test(line.trim())) { closeList(); closeTable(); out.push(line.trim()); continue; }
-
-    const h = line.match(/^(#{1,6})\s+(.*)$/);
-    if (h) {
-      closeList(); closeTable();
-      const n = Math.min(h[1].length + 1, 6);
-      const id = unesc(h[2]).toLowerCase().replace(/[^\w\s-]/g, "").trim().replace(/\s+/g, "-");
-      out.push(`<h${n} id="${esc(id)}">${inline(h[2])}</h${n}>`);
-      continue;
-    }
-    if (/^\s*(-\s*){3,}$/.test(line) || /^\s*(\*\s*){3,}$/.test(line)) {
-      closeList(); closeTable(); out.push("<hr>"); continue;
-    }
-    if (/^\s*\|.*\|\s*$/.test(line)) {
-      if (/^[\s|:\-]+$/.test(line)) continue;                     // separator row
-      const cells = line.trim().replace(/^\||\|$/g, "").split("|").map(c => c.trim());
-      if (!inTable) {
-        closeList(); inTable = true;
-        out.push("<table><tr>" + cells.map(c => `<th>${inline(c)}</th>`).join("") + "</tr>");
-      } else {
-        out.push("<tr>" + cells.map(c => `<td>${inline(c)}</td>`).join("") + "</tr>");
-      }
-      continue;
-    }
-    closeTable();
-
-    const li = line.match(/^\s*([-*+]|\d+\.)\s+(.*)$/);
-    if (li) {
-      const want = /\d/.test(li[1]) ? "ol" : "ul";
-      if (list !== want) { closeList(); list = want; out.push(`<${want}>`); }
-      const body = li[2].replace(/^\[([ x])\]\s*/, (_, c) => (c === "x" ? "✅ " : "☐ "));
-      out.push(`<li>${inline(body)}</li>`);
-      continue;
-    }
-    closeList();
-
-    if (/^\s*&gt;\s?/.test(line)) {
-      const body = inline(line.replace(/^\s*&gt;\s?/, ""));
-      const prev = out[out.length - 1] || "";
-      // consecutive quote lines belong to one block, not one block each
-      if (prev.startsWith("<blockquote>") && prev.endsWith("</blockquote>"))
-        out[out.length - 1] = prev.slice(0, -13) + (body.trim() ? " " + body : "<br>") + "</blockquote>";
-      else out.push(`<blockquote>${body}</blockquote>`);
-      continue;
-    }
-    if (!line.trim()) { para = false; continue; }
-    // markdown joins consecutive non-blank lines into one paragraph
-    if (para && out.length && out[out.length - 1].startsWith("<p>") && out[out.length - 1].endsWith("</p>"))
-      out[out.length - 1] = out[out.length - 1].slice(0, -4) + " " + inline(line) + "</p>";
-    else { out.push(`<p>${inline(line)}</p>`); para = true; }
-  }
-  closeList(); closeTable();
-  return out.join("\n").replace(/@@CODEBLOCK(\d+)@@/g, (_, i) => blocks[+i]);
-}
-
 // A failed fetch returns the server's JSON error; showing it as the document
 // would present an error message as content.
 async function fetchText(rel) {
@@ -1181,7 +1134,7 @@ function datalogs() {
   <div class="card"><h2>Datalogs — ${esc(v.id)}</h2>
     ${v.datalogs.length
       ? `<table><tr><th>File</th><th>Size</th><th></th></tr>${v.datalogs.map(f =>
-          `<tr><td>${esc(f.name)}</td><td class="num">${fmtSize(f.size)}</td><td>${dl(`vehicles/${v.id}/datalogs/${f.name}`)}${f.name.toLowerCase().endsWith(".csv") ? ` · <a href="#" onclick="logSummary(${jsq(`vehicles/${v.id}/datalogs/${f.name}`)});return false">summary</a> · <a href="#" onclick="logAnalysis(${jsq(`vehicles/${v.id}/datalogs/${f.name}`)});return false"><b>analyze trims</b></a>` : ""}</td></tr>`).join("")}</table>`
+          `<tr><td>${esc(f.name)}</td><td class="num">${fmtSize(f.size)}</td><td>${dl(`vehicles/${v.id}/datalogs/${f.name}`)}${f.name.toLowerCase().endsWith(".csv") ? ` · <a href="#" onclick="logSummary(${jsq(`vehicles/${v.id}/datalogs/${f.name}`)});return false">summary</a> · <a href="#" onclick="logAnalysis(${jsq(`vehicles/${v.id}/datalogs/${f.name}`)});return false"><b>analyze trims</b></a> · <a href="#" onclick="shareLog(${jsq(`vehicles/${v.id}/datalogs/${f.name}`)});return false" title="Scrub it and send it to the project to improve the analyser">share</a>` : ""}</td></tr>`).join("")}</table>`
       : `<div class="empty">No datalogs yet.</div>`}
     <div id="logsum"></div>
   </div>
@@ -1217,7 +1170,8 @@ function sessions() {
   return `${vehicleSelect()}
   <div class="card"><h2>Session logs — ${esc(v.id)}</h2>
     ${v.sessions.length ? v.sessions.map(s =>
-      `<div style="padding:5px 0;border-top:1px solid var(--grid)"><a href="#" onclick="viewFile(${jsq(`vehicles/${v.id}/sessions/${s.name}`)});return false">${esc(s.name)}</a></div>`).join("")
+      `<div style="padding:5px 0;border-top:1px solid var(--grid)"><a href="#" onclick="viewFile(${jsq(`vehicles/${v.id}/sessions/${s.name}`)});return false">${esc(s.name)}</a>
+        · <a href="#" onclick="printReport(${jsq(new URLSearchParams({ kind: "session", path: `vehicles/${v.id}/sessions/${s.name}` }).toString())});return false">PDF</a></div>`).join("")
       : `<div class="empty">No sessions logged yet.</div>`}
     <div id="fileview"></div>
   </div>
@@ -1333,6 +1287,156 @@ function usermath() {
   </div>`;
 }
 
+// ---------- before / after: compare two logs ----------
+// "Did v002 fix it?" — every log here names its revision, so the question can
+// be asked directly. Older revision on the left as "before".
+const revNum = f => Number((String(f).match(/_v(\d{3})_/) || [])[1] ?? -1);
+function compareControls(rel) {
+  const v = vh();
+  const others = (v?.datalogs || []).filter(f => f.name.toLowerCase().endsWith(".csv") && `vehicles/${v.id}/datalogs/${f.name}` !== rel)
+    .sort((a, b) => revNum(b.name) - revNum(a.name) || b.name.localeCompare(a.name));
+  if (!others.length) return "";
+  return `<div class="row" style="align-items:flex-end;margin:6px 0 10px">
+    <div><label>Compare with another log (before / after)</label>
+      <select id="cmpLog">${others.map(f => `<option value="${esc(`vehicles/${v.id}/datalogs/${f.name}`)}">${esc(f.name)}</option>`).join("")}</select></div>
+    <div><button class="btn" onclick="logCompare(${jsq(rel)}, $('#cmpLog').value)">Compare</button></div></div>`;
+}
+async function logCompare(current, other) {
+  const el = $("#logcompare");
+  el.innerHTML = `<div class="note">Comparing…</div>`;
+  const [a, b] = revNum(other) <= revNum(current) ? [other, current] : [current, other];
+  const filters = Object.fromEntries(Object.entries(LOG_FILTERS).filter(([k, v]) => k !== "path" && v !== "" && v != null));
+  let d;
+  try { d = await api(`/api/logcompare?${new URLSearchParams({ a, b, ...filters })}`); }
+  catch (e) { el.innerHTML = `<div class="note" style="color:var(--warn)">${esc(e.message)}</div>`; return; }
+  const sgn = (v, dp = 2) => v == null ? "—" : `${v > 0 ? "+" : ""}${+Number(v).toFixed(dp)}`;
+  const maxAbs = Math.max(0.1, ...d.maf.filter(m => m.delta != null).map(m => Math.abs(m.delta)));
+  el.innerHTML = `<div class="card" style="margin:10px 0">
+    <h3 style="margin-top:0">Before / after — ${esc(d.a.rev || "A")} → ${esc(d.b.rev || "B")}</h3>
+    <div class="note">Before: ${esc(d.a.file)} (${d.a.usable} usable rows) · After: ${esc(d.b.file)} (${d.b.usable} usable rows)</div>
+    ${d.warnings.map(w => `<div class="note" style="color:var(--warn)">⚠ ${esc(w)}</div>`).join("")}
+    <table style="margin-top:8px"><tr><th>MAF (${esc(d.units.maf)})</th><th>Samples before / after</th><th>Trim before (%)</th><th>Trim after (%)</th><th>Change (%)</th><th></th></tr>
+      ${d.maf.map(m => `<tr${m.delta == null ? ' class="lowdata"' : ""}><td>${m.from}–${m.to}</td><td class="num">${m.nA ?? "—"} / ${m.nB ?? "—"}</td>
+        <td class="num">${sgn(m.trimA)}</td><td class="num">${sgn(m.trimB)}</td>
+        <td class="num" style="${m.delta != null ? `background:${trimColor(m.delta, maxAbs)}` : ""}"><b>${m.delta == null ? "not compared" : sgn(m.delta)}</b></td>
+        <td class="note">${m.better == null ? "" : m.better ? "closer to zero ✓" : "further from zero"}</td></tr>`).join("")}</table>
+    ${d.wot.length ? `<table><tr><th>RPM</th><th>Samples before / after</th><th>Error before (% lean +)</th><th>Error after (% lean +)</th><th>Change (%)</th></tr>
+      ${d.wot.map(w => `<tr><td>${w.from}–${w.to}</td><td class="num">${w.nA ?? "—"} / ${w.nB ?? "—"}</td><td class="num">${sgn(w.errorA, 1)}</td><td class="num">${sgn(w.errorB, 1)}</td><td class="num"><b>${w.delta == null ? "not compared" : sgn(w.delta, 1)}</b></td></tr>`).join("")}</table>` : ""}
+    <div class="note">Knock: ${d.knock.a.samples ?? "—"} → ${d.knock.b.samples ?? "—"} sample(s) with retard; worst ${d.knock.a.worst ?? "—"}° → ${d.knock.b.worst ?? "—"}° (° crank).
+      ${d.closedLoop.a || d.closedLoop.b ? ` Closed-loop wideband check: ${sgn(d.closedLoop.a?.errorPct, 1)} % → ${sgn(d.closedLoop.b?.errorPct, 1)} %.` : ""}</div>
+    <div class="note">${esc(d.note)}</div>
+    ${exportRow({ kind: "logcompare", a, b, ...filters }, "this comparison")}
+  </div>`;
+}
+
+// ---------- event timeline ----------
+// Where things happened in the log, one lane per kind, fixed hue per kind.
+// Click (or Enter on) a marker for every channel's value at that moment.
+const EV_COLORS = { knock: "#d03b3b", lean: "#eb6834", wbOff: "#8a6fd1", silent: "#898781", warmup: "#2a78d6", dfco: "#1baf7a", session: "#c49a00" };
+const EV_ORDER = ["knock", "lean", "wbOff", "silent", "warmup", "dfco", "session"];
+let LAST_TIMELINE = null;
+function timelineHtml(tl) {
+  if (!tl || !tl.events?.length || !tl.durationSec) return "";
+  LAST_TIMELINE = tl;
+  const lanes = EV_ORDER.filter(t => tl.events.some(e => e.type === t));
+  // viewBox close to the column's real width, so text stays readable
+  const W = 780, laneH = 26, padL = 92, H = lanes.length * laneH + 28;
+  const x = t => padL + ((t - tl.startSec) / tl.durationSec) * (W - padL - 10);
+  return `<h3 style="margin-top:16px">Event timeline <span class="note">(${tl.events.length} event${tl.events.length === 1 ? "" : "s"} over ${tl.durationSec} s${tl.dropped ? `; ${tl.dropped} lesser ones not shown` : ""})</span></h3>
+  <svg class="chart" viewBox="0 0 ${W} ${H}" style="width:100%;height:auto" role="group" aria-label="Event timeline">
+    ${lanes.map((t, i) => `<text x="${padL - 8}" y="${i * laneH + 16}" text-anchor="end" font-size="12">${esc(tl.types[t].short || tl.types[t].label)}<title>${esc(tl.types[t].label)}</title></text>
+      <line x1="${padL}" x2="${W - 10}" y1="${i * laneH + 12}" y2="${i * laneH + 12}" stroke="var(--grid)"/>`).join("")}
+    ${tl.events.map((e, k) => {
+      const lane = lanes.indexOf(e.type), y = lane * laneH + 4, c = EV_COLORS[e.type] || "var(--muted)";
+      const mark = e.tEnd != null && e.tEnd > e.t
+        ? `<rect x="${x(e.t)}" y="${y + 2}" width="${Math.max(4, x(e.tEnd) - x(e.t))}" height="12" rx="3" fill="${c}" opacity=".85"/>`
+        : `<circle cx="${x(e.t)}" cy="${y + 8}" r="6" fill="${c}"/>`;
+      return `<g class="evmark" tabindex="0" role="button" aria-label="${esc(`${e.label} at ${e.t} s`)}" onclick="showEvent(${k})" onkeydown="if(event.key==='Enter')showEvent(${k})">${mark}<title>${esc(`${e.t} s — ${e.label}: ${e.detail}`)}</title></g>`;
+    }).join("")}
+    <text x="${padL}" y="${H - 6}" font-size="11">${tl.startSec} s</text>
+    <text x="${(padL + W - 10) / 2}" y="${H - 6}" font-size="11" text-anchor="middle">${(tl.startSec + tl.durationSec / 2).toFixed(0)} s</text>
+    <text x="${W - 10}" y="${H - 6}" text-anchor="end" font-size="11">${(tl.startSec + tl.durationSec).toFixed(1)} s</text>
+  </svg>
+  <div id="eventdetail" class="note">Click a marker to see every channel at that moment.</div>`;
+}
+function showEvent(k) {
+  const e = LAST_TIMELINE?.events?.[k];
+  if (!e) return;
+  $("#eventdetail").innerHTML = `<div class="card" style="margin:8px 0">
+    <b>${esc(e.label)}</b> at <b>${e.t} s</b>${e.tEnd != null ? ` until ${e.tEnd} s` : ""} — ${esc(e.detail)}
+    <table style="margin-top:6px"><tr><th>Channel (unit)</th><th>Value at ${e.t} s</th></tr>
+      ${e.snapshot.map(c => `<tr><td>${esc(c.channel)}</td><td class="num">${esc(c.value)}</td></tr>`).join("")}</table>
+  </div>`;
+}
+
+// ---------- math channels ----------
+function mathHtml(m) {
+  if (!m || (!m.computed.length && !m.skipped.length)) return "";
+  return `<h3 style="margin-top:18px">Math channels — your formulas on this log</h3>
+    ${m.computed.length ? `<table><tr><th>Formula</th><th>Min</th><th>Avg</th><th>Max</th><th>Unit</th><th>Samples</th><th>Status</th></tr>
+      ${m.computed.map(c => `<tr><td><b>${esc(c.name)}</b><div class="note"><code>${esc(c.expression)}</code>${c.caveats.length ? `<br>${c.caveats.map(esc).join("<br>")}` : ""}</div></td>
+        <td class="num">${c.min}</td><td class="num">${c.avg}</td><td class="num">${c.max}</td><td>${esc(c.unit || "not stated")}</td><td class="num">${c.samples}</td>
+        <td><span class="badge ${c.status === "verified" ? "verified" : "unverified"}">${esc(c.status)}</span></td></tr>`).join("")}</table>` : ""}
+    ${m.skipped.length ? `<details><summary>${m.skipped.length} formula${m.skipped.length === 1 ? "" : "s"} not computed</summary>
+      <ul>${m.skipped.map(x => `<li><b>${esc(x.name)}</b> — ${esc(x.reason)}</li>`).join("")}</ul></details>` : ""}
+    <div class="note">${esc(m.note)}</div>`;
+}
+
+// ---------- share a log with the project ----------
+// Scrubbed on this machine, packaged outside the repository, and shown in full
+// before anything leaves: what was redacted, the file, and the issue text.
+let SHARE = null;
+async function shareLog(rel) {
+  let p;
+  try { p = await api("/api/submission/prepare", { method: "POST", body: JSON.stringify({ path: rel }) }); }
+  catch (e) { flash("Cannot share this log: " + e.message); return; }
+  SHARE = p;
+  const box = document.createElement("div");
+  box.id = "modal";
+  box.innerHTML = `<div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="sharetitle">
+    <h2 id="sharetitle">Share this log with the project</h2>
+    <div class="note">Real logs are what improve the analyser. <b>What you post is public</b> on github.com/${esc(p.project)} and cannot be fully withdrawn — read what is below first.</div>
+    <h3>Redacted on this machine</h3>
+    ${p.redactions.length ? `<ul>${p.redactions.map(r => `<li>${esc(r)}</li>`).join("")}</ul>` : `<div class="note">Nothing identifying was found to redact.</div>`}
+    <div class="note">Scrubbed file: <code>${esc(p.scrubbedName)}</code> (${fmtSize(p.size)}) — <a href="/api/submission/file?id=${encodeURIComponent(p.id)}">download it</a> to look it over.</div>
+    <table style="margin:8px 0"><tr><td>Platform</td><td>${esc(p.platform || "—")}</td></tr><tr><td>Vehicle</td><td>${esc(p.vehicle || "—")}</td></tr><tr><td>Wideband</td><td>${esc(p.wideband || "none found")}</td></tr></table>
+    <label>What is in the log, and what looks wrong</label>
+    <textarea id="sharewhat" oninput="shareGate()" placeholder="Cruise and a WOT pull on v002. The lean warning above 4,000 RPM looks too high."></textarea>
+    <details><summary>The issue text that will be posted</summary><pre class="md">${esc(p.body)}</pre></details>
+    <div style="margin-top:8px">${["I looked at the scrubbed file and it contains no VIN, address or personal note",
+      "This is a log from my own vehicle", "I understand the post is public", "I am contributing it under GPL-3.0"]
+      .map(t => `<label style="display:flex;gap:8px;font-weight:400;margin:4px 0"><input type="checkbox" class="sharecheck" onchange="shareGate()" style="width:auto">${esc(t)}</label>`).join("")}</div>
+    <div class="actions">
+      ${p.gh.ready ? `<button class="btn primary" id="sharepost" disabled onclick="sharePost()">Post it for me</button>` : ""}
+      <button class="btn ${p.gh.ready ? "" : "primary"}" id="shareform" disabled onclick="shareForm()">Open GitHub's form</button>
+      <button class="btn" onclick="$('#modal').remove()">Cancel</button>
+    </div>
+    <div class="note">${p.gh.ready
+      ? "“Post it for me” uploads the scrubbed log as a <b>secret gist</b> — unlisted, but readable by anyone with the link — and opens the issue with it linked."
+      : `${esc(p.gh.why)}, so the app cannot post for you. “Open GitHub's form” fills in everything except the file: drag the scrubbed file into its upload box.`}</div>
+    <div id="shareresult"></div>
+  </div>`;
+  document.body.appendChild(box);
+}
+function shareGate() {
+  const ok = [...document.querySelectorAll(".sharecheck")].every(c => c.checked) && $("#sharewhat").value.trim().length > 0;
+  for (const id of ["#sharepost", "#shareform"]) if ($(id)) $(id).disabled = !ok;
+}
+async function sharePost() {
+  $("#sharepost").disabled = true;
+  $("#shareresult").innerHTML = `<div class="note">Posting…</div>`;
+  try {
+    const r = await api("/api/submission/post", { method: "POST", body: JSON.stringify({ id: SHARE.id, confirmed: true, what: $("#sharewhat").value }) });
+    $("#shareresult").innerHTML = `<div class="note" style="color:var(--good)">✓ Posted: <a href="${esc(r.issueUrl)}" target="_blank" rel="noopener">${esc(r.issueUrl)}</a> · log: <a href="${esc(r.gistUrl)}" target="_blank" rel="noopener">gist</a></div>`;
+  } catch (e) { $("#shareresult").innerHTML = `<div class="note" style="color:var(--warn)">${esc(e.message)}</div>`; $("#sharepost").disabled = false; }
+}
+function shareForm() {
+  const u = new URL(SHARE.prefillUrl);
+  u.searchParams.set("what", $("#sharewhat").value.slice(0, 1500));
+  window.open(u.toString(), "_blank", "noopener");
+  $("#shareresult").innerHTML = `<div class="note">GitHub's form is open in a new tab. Drag in the scrubbed file — <a href="/api/submission/file?id=${encodeURIComponent(SHARE.id)}">download it here</a> — then submit it there.</div>`;
+}
+
 // ---------- actions ----------
 
 async function uploadFile(e, kind) {
@@ -1397,6 +1501,10 @@ async function logAnalysis(rel, filters) {
 
   el.innerHTML = `
     <h3 style="margin-top:14px">Trim analysis — ${esc(rel.split("/").pop())}</h3>
+    ${exportRow({ kind: "log", ...LOG_FILTERS }, "this analysis")}
+    ${compareControls(rel)}
+    <div id="logcompare"></div>
+    ${timelineHtml(r.timeline)}
 
     <div class="note" style="margin-bottom:6px">
       <b>${r.keptCount.toLocaleString()}</b> of ${r.rowCount.toLocaleString()} rows usable
@@ -1473,6 +1581,7 @@ async function logAnalysis(rel, filters) {
     ${widebandHtml(r.wideband)}
     ${airModelsHtml(r.airModels)}
     ${veHtml(r.ve)}
+    ${mathHtml(r.math)}
 
     ${r.heat && !r.heat.error && r.heat.cells.length ? `
       <h3 style="margin-top:16px">Where the trims live — ${esc(r.heat.xRole.toUpperCase())} (${esc(r.heat.xUnit || "?")}) × ${esc(r.heat.yRole.toUpperCase())} (${esc(r.heat.yUnit || "unit not stated in the log")})</h3>

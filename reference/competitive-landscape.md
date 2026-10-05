@@ -53,6 +53,32 @@ But several have features worth borrowing (tagged **→ borrow**).
   afterthought (folders + filenames). No versioning, no session discipline.
 - **MegaLogViewer HD** — log analysis only; pairs with us, doesn't overlap.
 
+## Update — 2026-10-04
+
+- **LibreTune** is still pre-release (nightly builds only) but very active:
+  ~900 commits, a 2D/3D table editor, math channels, log playback, and a
+  "bring your own LLM" co-pilot that proposes changes and requires explicit
+  approval before applying any. Still aftermarket ECUs only.
+  → **borrowed:** math channels evaluated against logs.
+- **Log-sharing viewers** (Datazap; NorCal Motorsports' LogApp, v1.1 April
+  2026): comparison-log overlay with an offset slider, clickable timeline
+  markers that jump to events (ignition retard, WOT, thermal, shifts), a pinned
+  cursor that reads out every channel at one instant, and "cell tracing" that
+  overlays a log on a calibration table with per-cell hit counts.
+  → **borrowed:** the event timeline with a per-event readout, and before/after
+  log comparison by revision. Cell tracing needs an XDF for the OS — backlog.
+- **HP Tuners**: comparison logs, printable histograms, the editor's compare
+  view (main / compare / difference), and VCM Telemetry for controlled sharing
+  of logs without passing files around.
+  → **borrowed:** printable reports and in-app log sharing.
+- Nothing found occupies the "process and history layer" spot; the verdict
+  above stands.
+
+Sources: <https://github.com/RallyPat/LibreTune>,
+<https://www.supramkv.com/threads/tuning-tools-now-live.36621/>,
+<https://www.hptuners.com/>,
+<https://www.hpacademy.com/previous-webinars/215-how-to-use-histograms-in-hp-tuners/>
+
 ## Positioning
 
 Tuning Garage = the **process and history layer** for OEM GM tuning:

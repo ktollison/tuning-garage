@@ -95,7 +95,7 @@ The app applies these names for you when you upload through it.
 | **Garage** | Every vehicle, its baseline status and what is flashed. Add a vehicle here |
 | **Overview** | The selected vehicle: what is in the car vs newest on disk, milestones, profile |
 | **Tunes** | Stock baseline, revisions, bin analysis, bin compare, checklist-gated "mark as flashed" |
-| **Datalogs** | Upload logs; trim, wideband, knock, VE and airflow analysis |
+| **Datalogs** | Upload logs; trim, wideband, knock, VE and airflow analysis; event timeline; math channels; before/after compare; share a log with the project |
 | **Sessions** | Write and read session notes |
 | **Progression** | The learning tracker |
 | **User Math** | Your formula library, with VCM Scanner Math Lab import and export |
@@ -103,6 +103,9 @@ The app applies these names for you when you upload through it.
 | **Scanner** | VCM Scanner channel lists, charts, layouts and the channel dictionary |
 | **Library** | Practice bins, XDF definitions, and the reference docs |
 | **Platforms** | PCM and adapter reference tables |
+
+Every analysis, comparison, the vehicle history and each session exports as a
+**Markdown report** saved into your repo, or as a **PDF** through the print view.
 
 Everything the analysis produces is a **draft reading**: arithmetic on data you
 supplied, with every unit stated. Nothing here writes to a tune file.

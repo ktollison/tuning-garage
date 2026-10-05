@@ -311,6 +311,28 @@ is a cell you can go and look at.
   those trims describe the MAF table anyway. Log a WOT pull, or a session with
   the MAF disabled, to get numbers here.
 
+Three more tools sit on the same page:
+
+- **Event timeline.** A strip across the log with one lane per kind of event:
+  knock, lean of commanded, wideband off, PCM not reporting, warm-up, decel
+  fuel cut and session restarts. Click a marker to see every channel's value at
+  that moment.
+- **Math channels.** Your User Math formulas, evaluated on this log. VCM Scanner
+  references like `[50030.92]` resolve through the parameter IDs HP Tuners
+  writes into its CSV; names like `RPM` or `LTFT` resolve to the channels the
+  analysis found. AFR inputs (`WB_AFR`, `Commanded_AFR`) are put on one stoich
+  before they are compared. A formula whose inputs the log lacks is listed with
+  the reason, never computed from zeros.
+- **Compare with another log.** Pick another CSV of the same vehicle for a
+  before/after view: trim per MAF bin, enrichment error per RPM band and knock,
+  side by side with the change. The older revision is "before". Only conditions
+  both logs covered are compared; the rest is shown and labelled.
+
+**Export** any analysis or comparison: *Save to repo* writes a Markdown report
+into `vehicles/<vehicle>/reports/`, versioned like everything else; *Download
+.md* gives you the file; *Print / PDF* opens a print view where your browser's
+"Save as PDF" makes the PDF.
+
 ### Step 8 — Apply one change, then log the session
 
 Take **one** suggestion, apply it by hand in your tuning software, and check the
@@ -362,6 +384,20 @@ inline.
 ![Library](guide/images/library.png)
 
 **Platforms** — PCM and adapter matrices for the platforms the app knows about.
+
+**Reports** — besides log analyses, the Overview exports a **vehicle history**
+(profile, baseline fingerprints, revisions with their changelog entries, the
+flash log and any gaps), the bin compare exports what changed, and each session
+has a PDF link. Every report states its units, ends with the draft-reading note,
+and never contains a VIN.
+
+**Sharing a log with the project** — the **share** link beside a CSV scrubs it
+on your machine, packages it outside the repository, and shows exactly what
+would be posted before anything leaves. With the GitHub CLI signed in, **Post
+it for me** uploads the scrubbed log as a *secret* gist (unlisted, but readable
+by anyone with the link) and opens the issue with it linked. Without it, **Open
+GitHub's form** fills in everything except the file, and you drag the scrubbed
+file in. Real logs are what improve the analyser.
 
 ---
 

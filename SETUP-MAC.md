@@ -234,6 +234,7 @@ If you tune on Windows and research on the Mac:
 | App will not start after a pull | `node --version` — must be 18+ |
 | App is running old code after a pull or update | `./start-tuning.sh` — it detects the mismatch and restarts. Or `sh scripts/autostart-macos.sh restart` |
 | Files listed but unreadable, or `Unknown system error -11` | iCloud evicted their contents. `brctl download <path>` restores them; move the repo out of `~/Documents` so it stops happening |
+| Sharing a log says gh was not found, but it is installed | The agent was installed before it recorded your `PATH`. Re-run `sh scripts/autostart-macos.sh install` |
 | Agent loaded but the port does not answer | Read `logs/app.err.log`; launchd runs with a minimal `PATH`, so re-run `install` if you changed how Node is installed |
 
 ## If both machines edited without syncing

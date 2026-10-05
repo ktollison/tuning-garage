@@ -80,9 +80,24 @@ s,rpm,
 16777.0,9999,
 `);
 
+// sharing: bundles go to a throwaway store, and gh is a stub on PATH
+const STORE = path.join(TMP, "store"), BIN = path.join(TMP, "bin");
+fs.mkdirSync(BIN, { recursive: true });
+fs.writeFileSync(path.join(BIN, "gh"), `#!/bin/sh
+case "$1" in
+  --version) echo "gh version 9" ;;
+  auth) exit 0 ;;
+  gist) echo "https://gist.github.com/someone/abc123" ;;
+  issue) echo "https://github.com/owner/repo/issues/42" ;;
+esac
+`, { mode: 0o755 });
+put("vehicles/test-car/datalogs/2026-01-06_v002_cruise.csv", fs.readFileSync(path.join(REPO, "vehicles/test-car/datalogs/2026-01-03_v001_cruise.csv"), "utf8"));
+put("vehicles/test-car/sessions/2026-01-03_session.md", "# Tuning Session — 2026-01-03\n\n**Goal for this session:** cruise log\n");
+
 const port = await new Promise(res => { const s = net.createServer().listen(0, "127.0.0.1", () => { const p = s.address().port; s.close(() => res(p)); }); });
 const server = spawn(process.execPath, [path.join(ROOT, "app/server.mjs")],
-  { env: { ...process.env, TUNING_REPO: REPO, PORT: String(port) }, stdio: ["ignore", "pipe", "pipe"] });
+  { env: { ...process.env, TUNING_REPO: REPO, PORT: String(port), TUNING_SUBMISSIONS_DIR: STORE,
+            TUNING_PROJECT_REPO: "owner/repo", PATH: `${BIN}${path.delimiter}${process.env.PATH}` }, stdio: ["ignore", "pipe", "pipe"] });
 const base = `http://127.0.0.1:${port}`;
 for (let i = 0; i < 50; i++) { try { await fetch(`${base}/api/state`); break; } catch { await new Promise(r => setTimeout(r, 100)); } }
 
@@ -163,6 +178,48 @@ try {
     const log = fs.readFileSync(path.join(REPO, "vehicles/test-car/flash-log.md"), "utf8");
     t(good.status === 200 && /\| 2026-01-05 \| v002 \| MPVI3 \| — \|/.test(log), "a valid flash is recorded");
     t(/Last flashed: 2026-01-05/.test(fs.readFileSync(path.join(REPO, "vehicles/test-car/vehicle.md"), "utf8")), "and the profile updated with it");
+  }
+
+  console.log("— reports —");
+  {
+    const get = async q => { const r = await fetch(`${base}/api/report?${new URLSearchParams(q)}`); return { status: r.status, body: await r.json() }; };
+    const log = await get({ kind: "log", path: "vehicles/test-car/datalogs/2026-01-03_v001_cruise.csv" });
+    t(log.status === 200 && /^# Log analysis/.test(log.body.markdown) && log.body.filename === "2026-01-03_v001_cruise_analysis.md", `log report (${log.body.filename})`);
+    const veh = await get({ kind: "vehicle", vehicle: "test-car" });
+    t(veh.status === 200 && /^# Vehicle history — test-car/.test(veh.body.markdown), "vehicle report");
+    const ses = await get({ kind: "session", path: "vehicles/test-car/sessions/2026-01-03_session.md" });
+    t(ses.status === 200 && /cruise log/.test(ses.body.markdown), "session report is the session file");
+    const cmp = await get({ kind: "logcompare", a: "vehicles/test-car/datalogs/2026-01-03_v001_cruise.csv", b: "vehicles/test-car/datalogs/2026-01-06_v002_cruise.csv" });
+    t(cmp.status === 200 && /v001 against v002/.test(cmp.body.markdown), "compare report");
+    const lc = await (await fetch(`${base}/api/logcompare?a=vehicles/test-car/datalogs/2026-01-03_v001_cruise.csv&b=vehicles/test-car/datalogs/2026-01-06_v002_cruise.csv`)).json();
+    t(lc.ok && lc.a.rev === "v001" && lc.b.rev === "v002", "log compare endpoint");
+
+    const save = await post("/api/report/save", { vehicle: "test-car", filename: log.body.filename, markdown: log.body.markdown });
+    const saved = (await save.json()).saved;
+    t(save.status === 200 && saved === "vehicles/test-car/reports/2026-01-03_v001_cruise_analysis.md" && fs.existsSync(path.join(REPO, saved)), `saved into reports/ (${saved})`);
+    const again = await (await post("/api/report/save", { vehicle: "test-car", filename: log.body.filename, markdown: "x" })).json();
+    t(/-2\.md$/.test(again.saved), "a second save never overwrites the first");
+    const evil = await post("/api/report/save", { vehicle: "test-car", filename: "../../../escaped.md", markdown: "x" });
+    t(evil.status === 400 && !fs.existsSync(path.join(REPO, "escaped.md")), "a file name that climbs out is refused");
+    const noHeader = await post("/api/report/save", { vehicle: "test-car", filename: "x.md", markdown: "x" }, {});
+    t(noHeader.status === 403, "saving needs the app's header like every other write");
+  }
+
+  console.log("— sharing a log —");
+  {
+    const prep = await post("/api/submission/prepare", { path: "vehicles/test-car/datalogs/2026-01-03_v001_cruise.csv" });
+    const p = await prep.json();
+    t(prep.status === 200 && p.gh?.ready === true && /owner\/repo/.test(p.prefillUrl), "prepared, with gh found on the app's PATH");
+    t(fs.existsSync(path.join(STORE, p.id, "2026-01-03_v001_cruise.csv")) && !fs.existsSync(path.join(REPO, "submissions")), "the bundle is written outside the repository");
+    const file = await fetch(`${base}/api/submission/file?id=${encodeURIComponent(p.id)}`);
+    t(file.status === 200 && /attachment/.test(file.headers.get("content-disposition") || ""), "the scrubbed file downloads");
+    const bad = await fetch(`${base}/api/submission/file?id=${encodeURIComponent("../../repo")}`);
+    t(bad.status === 400, "an id that points elsewhere is refused");
+    const unconfirmed = await post("/api/submission/post", { id: p.id, what: "x" });
+    t(unconfirmed.status === 400, "posting without the confirmations is refused");
+    const posted = await post("/api/submission/post", { id: p.id, confirmed: true, what: "cruise on v001" });
+    const r = await posted.json();
+    t(posted.status === 200 && r.issueUrl?.endsWith("/issues/42") && /gist/.test(r.gistUrl), "posted: gist plus issue (stub gh)");
   }
 
   console.log("— still up after all of the above —");

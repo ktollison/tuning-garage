@@ -8,6 +8,66 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions:
 adds features, a PATCH release fixes things. Releases before 0.40.0 predate
 the public project.
 
+## [0.46.0] - 2026-10-04
+
+Reports and PDF, sharing a log from inside the app, and three features taken
+from other tools: before/after log comparison, an event timeline and math
+channels. The research behind them is in `reference/competitive-landscape.md`.
+
+### Added
+
+- **Reports, as Markdown and PDF.** A log analysis, a before/after
+  comparison, the vehicle history, a bin compare and each session can be:
+  - saved into `vehicles/<vehicle>/reports/`, versioned like everything else;
+  - downloaded as Markdown;
+  - printed through a clean print view, where the browser's "Save as PDF" makes
+    the PDF.
+
+  No dependencies. Every report states its units, ends with the draft-reading
+  note, and redacts anything VIN-shaped as its last step. The vehicle history
+  says only whether a VIN is on file.
+- **Share a log from the app.** The **share** link beside a CSV scrubs it,
+  packages it outside the repository, and shows what was redacted and the exact
+  issue text before anything leaves. Four confirmations are required.
+  - With the GitHub CLI signed in, the app posts the scrubbed log as a secret
+    gist and the issue linking to it.
+  - Otherwise it opens GitHub's issue form pre-filled, with platform and
+    vehicle from your profile (first clause only, never the VIN), and hands you
+    the scrubbed file.
+
+  `scripts/submit-log.mjs` uses the same code and now also posts the gist, so
+  there is nothing left to attach by hand.
+- **Before/after comparison** [from HP Tuners' comparison logs and Datazap].
+  Pick another log of the same vehicle to see trim per MAF bin, enrichment
+  error per RPM band and knock side by side with the change. Only conditions
+  both logs covered are compared; anything else is shown and labelled.
+- **Event timeline** [from Datazap and NorCal's LogApp]. A strip across the log
+  with lanes for knock, lean of commanded, wideband off, PCM not reporting,
+  warm-up, decel fuel cut and session restarts. Clicking a marker shows every
+  channel at that moment. On a real idle log it shows both key-offs,
+  the AEM heating, and the 16 s hot-restart warm-up.
+- **Math channels** [from MegaLogViewer and LibreTune]. Your User Math formulas
+  are evaluated on the log. `[50030.92]` references resolve through the
+  parameter IDs HP Tuners writes into its CSV, and names like `RPM` or `LTFT`
+  through the channels the analysis found. A formula with a missing input, a
+  function, or another platform's tag is listed with the reason, never computed
+  from zeros. AFR inputs are put on one stoich first: the seed "AFR error"
+  formula read 1376% on a real log, because commanded was in λ and the wideband
+  in AFR. It now reads +0.46%, matching the closed-loop check.
+
+### Fixed
+
+- **Under the macOS agent, tools installed with Homebrew were "not
+  installed".** launchd's `PATH` lacks Homebrew, so the app could not find `gh`.
+  The agent now records the `PATH` it was installed from; re-run
+  `sh scripts/autostart-macos.sh install` once to pick this up.
+- **Units read from a log no longer report a channel's name as its unit**
+  ("SAE" for Fuel System Status); text in brackets that is not a unit now shows
+  as "not stated".
+- **One expression compiler** (`app/modules/expr.mjs`) now serves both XDF
+  scaling and math channels, so the unary-minus and power fixes live in one
+  place.
+
 ## [0.45.0] - 2026-10-04
 
 A full code audit, and guards that keep the public project in step with its
