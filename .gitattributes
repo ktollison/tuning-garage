@@ -1,3 +1,8 @@
+# Text files are LF in every checkout, on every OS. Git for Windows defaults to
+# CRLF, which breaks shell shebangs and the tests that read these files line by
+# line. Binaries are listed below; the one exception is *.cmd, at the end.
+* text=auto eol=lf
+
 # Tune files and datalogs are binary — never diff, never mangle line endings
 *.bin binary
 *.hpt binary

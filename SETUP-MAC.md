@@ -34,7 +34,7 @@ Open a new Terminal window so it picks up the new tools, then:
 git --version && node --version && gh --version
 ```
 
-Node must be **18 or newer** — the app uses modern JavaScript and has zero
+Node must be **20 or newer** — the app uses modern JavaScript and has zero
 dependencies, so nothing else needs installing.
 
 ---
@@ -231,7 +231,7 @@ If you tune on Windows and research on the Mac:
 | Push rejected, or it keeps asking for a password | Re-run `gh auth login` and answer **Yes** to "Authenticate Git with your GitHub credentials" |
 | Commit says it worked but nothing changed | `git config --global user.email` is unset — see step 3 |
 | Port 4590 already in use | Something else is on it: `lsof -nP -iTCP:4590 -sTCP:LISTEN`. Or run on another port: `PORT=4700 node app/server.mjs` |
-| App will not start after a pull | `node --version` — must be 18+ |
+| App will not start after a pull | `node --version` — must be 20+ |
 | App is running old code after a pull or update | `./start-tuning.sh` — it detects the mismatch and restarts. Or `sh scripts/autostart-macos.sh restart` |
 | Files listed but unreadable, or `Unknown system error -11` | iCloud evicted their contents. `brctl download <path>` restores them; move the repo out of `~/Documents` so it stops happening |
 | Sharing a log says gh was not found, but it is installed | The agent was installed before it recorded your `PATH`. Re-run `sh scripts/autostart-macos.sh install` |

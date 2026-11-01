@@ -14,7 +14,7 @@ where git >nul 2>nul
 if errorlevel 1 goto nogit
 where node >nul 2>nul
 if errorlevel 1 goto nonode
-node -e "process.exit(+process.versions.node.split('.')[0] >= 18 ? 0 : 1)"
+node -e "process.exit(+process.versions.node.split('.')[0] >= 20 ? 0 : 1)"
 if errorlevel 1 goto oldnode
 
 echo Pulling latest from GitHub...
@@ -83,7 +83,7 @@ pause
 goto done
 
 :oldnode
-for /f %%v in ('node --version') do echo Node.js 18 or newer is needed - this machine has %%v.
+for /f %%v in ('node --version') do echo Node.js 20 or newer is needed - this machine has %%v.
 echo Install the LTS version from https://nodejs.org, then try again.
 pause
 goto done

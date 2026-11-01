@@ -8,6 +8,61 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions:
 adds features, a PATCH release fixes things. Releases before 0.40.0 predate
 the public project.
 
+## [Unreleased]
+
+## [0.47.0] - 2026-11-01
+
+The public kit gets the drift guards its docs were missing, and the problems
+they found are fixed. **The minimum Node version is now 20**: 18 reached
+end-of-life and was never tested.
+
+### Added
+
+- **A docs-match-the-code gate, `scripts/check-kit-docs.mjs`**, ported from the
+  `check_docs` gates in the author's other projects. It fails when a doc names a
+  file the kit does not contain, a link or anchor is broken or leaves the
+  repository, the changelog is out of Keep a Changelog shape or lacks compare
+  links, a script or module is named in no doc, the README's tabs or
+  `reference/api.md` disagree with the app, or the Node minimum differs between
+  the server, launchers, docs and CI. It runs on the exported kit in CI and
+  before every publish, and in the public repository's CI. Each check has a test
+  that makes it fail.
+- **`reference/api.md`**, the HTTP interface: every endpoint, the request guard,
+  and the `X-Tuning-Garage` header that every write needs. The gate fails if it
+  and the server disagree.
+- **`scripts/check-repo-settings.mjs`** checks the repository's GitHub settings
+  against what the docs promise, and prints the command that fixes any it finds
+  broken. The release script runs it first.
+- **CI on Windows and macOS** in the public repository, on Node 20 and 24,
+  beside Linux. Template users' private copies keep the cheap Linux legs only.
+  Dependabot keeps the Actions versions current in the source.
+- **The User Guide says which version it was last checked against**, and the
+  gate fails if that is not the current one.
+- **The server checks its own Node version** and says so plainly if it is too
+  old, instead of failing somewhere unrelated.
+
+### Changed
+
+- **Minimum Node is 20**, in the server, both launchers, the docs and CI.
+- **Text files are LF in every checkout**, on every OS, including Windows'
+  CRLF default. `.cmd` files stay CRLF.
+- The README gained a reference for the scripts and modules, and the public
+  changelog now has an `[Unreleased]` section and compare links.
+
+### Fixed
+
+- **SECURITY.md sent people to private vulnerability reporting while it was
+  switched off.** It is now on, and the settings check watches it.
+- CONTRIBUTING.md said "nothing gets merged with red CI", which GitHub does not
+  enforce (releases are pushed straight to `main`). It now says what is true,
+  and explains that the repository is built from a private source, so a merged
+  contribution arrives in the next release, possibly reworded.
+- Two broken links: the FAQ pointed at an incident write-up that does not ship,
+  and the Code of Conduct's security link was relative, so in a template copy it
+  led to the user's own repository.
+- The 0.40.0 and 0.45.0 changelog entries now use the standard section names, in
+  order.
+
 ## [0.46.0] - 2026-10-04
 
 Reports and PDF, sharing a log from inside the app, and three features taken
@@ -75,26 +130,26 @@ source. **Update promptly**: the first two fixes close holes that let any web
 page you visit write files on your computer, or read your tunes, through the
 app.
 
-### Security
+### Added
 
-- **Any website could write files through the app.** The server binds to
-  127.0.0.1, which keeps the network out but not your browser: a page can send
-  a plain POST to localhost without asking. The upload endpoint also put its
-  `date` and `rev` values into file names unchecked, so one such request wrote
-  a file outside the repository, wherever your account can write. This was
-  demonstrated against the running app before the fix. The session `date` had
-  the same flaw. Now:
-  - the server refuses any request whose `Host` or `Origin` is not its own,
-    which also stops a site using DNS rebinding to read your tunes and VIN;
-  - writes must carry an `X-Tuning-Garage` header that other sites cannot add;
-  - dates and revisions are validated, and every file written is confined to
-    its folder.
-- **A file name could run code in the app.** 33 click handlers placed names
-  into `onclick` strings in a way the browser decodes before running them, so a
-  quote ended the string. A VCM Scanner file named to carry code would have run
-  it inside the app, which can write files and push to git. Every handler now
-  passes values as proper JavaScript strings. A test proves this with hostile
-  names, and another refuses the old pattern anywhere in the page.
+- **Every public release is checked against its source.** The public
+  repository must be exactly the export of the source at the same tag, with
+  nothing committed there directly. This is checked on every push to the
+  source, once a day on a schedule (a change merged on the public side would
+  otherwise go unnoticed until the next release erased it), and before every
+  publish. All 22 public releases, v0.31.0 to v0.44.0, reproduce byte for byte.
+- **Publishing refuses a release it could not reproduce later**: from
+  uncommitted source, from a commit that isn't the version's tag, or with the
+  tag unpushed. It also refuses while the public repository has commits the
+  source doesn't, which would otherwise be silently erased.
+- **The export accounts for every file.** Each tracked file must be either
+  shipped or explicitly kept private, so a new file can no longer miss a
+  release, or slip into one, unnoticed. Hand-written public versions of files
+  (README, CI workflow, platform data) must be re-reviewed whenever the source
+  they were written from changes.
+- **The update script's promise is tested against the docs.** The README and
+  User Guide list what an update never touches; a test checks that the update
+  script protects exactly those paths.
 
 ### Fixed
 
@@ -168,26 +223,26 @@ app.
   command, which PowerShell rejects. Its console window is titled
   "Tuning Garage".
 
-### Added
+### Security
 
-- **Every public release is checked against its source.** The public
-  repository must be exactly the export of the source at the same tag, with
-  nothing committed there directly. This is checked on every push to the
-  source, once a day on a schedule (a change merged on the public side would
-  otherwise go unnoticed until the next release erased it), and before every
-  publish. All 22 public releases, v0.31.0 to v0.44.0, reproduce byte for byte.
-- **Publishing refuses a release it could not reproduce later**: from
-  uncommitted source, from a commit that isn't the version's tag, or with the
-  tag unpushed. It also refuses while the public repository has commits the
-  source doesn't, which would otherwise be silently erased.
-- **The export accounts for every file.** Each tracked file must be either
-  shipped or explicitly kept private, so a new file can no longer miss a
-  release, or slip into one, unnoticed. Hand-written public versions of files
-  (README, CI workflow, platform data) must be re-reviewed whenever the source
-  they were written from changes.
-- **The update script's promise is tested against the docs.** The README and
-  User Guide list what an update never touches; a test checks that the update
-  script protects exactly those paths.
+- **Any website could write files through the app.** The server binds to
+  127.0.0.1, which keeps the network out but not your browser: a page can send
+  a plain POST to localhost without asking. The upload endpoint also put its
+  `date` and `rev` values into file names unchecked, so one such request wrote
+  a file outside the repository, wherever your account can write. This was
+  demonstrated against the running app before the fix. The session `date` had
+  the same flaw. Now:
+  - the server refuses any request whose `Host` or `Origin` is not its own,
+    which also stops a site using DNS rebinding to read your tunes and VIN;
+  - writes must carry an `X-Tuning-Garage` header that other sites cannot add;
+  - dates and revisions are validated, and every file written is confined to
+    its folder.
+- **A file name could run code in the app.** 33 click handlers placed names
+  into `onclick` strings in a way the browser decodes before running them, so a
+  quote ended the string. A VCM Scanner file named to carry code would have run
+  it inside the app, which can write files and push to git. Every handler now
+  passes values as proper JavaScript strings. A test proves this with hostile
+  names, and another refuses the old pattern anywhere in the page.
 
 ## [0.44.0] - 2026-10-04
 
@@ -378,7 +433,19 @@ A calculation audit of the log analysis. Nine defects, each reproduced by a
 failing test before it was fixed (`scripts/test/audit-regressions.test.mjs`),
 and every number that moved on the two real logs accounted for.
 
-### Fixed — safety
+### Changed
+
+- Empty rows (the gap between logging sessions) are counted as `noData` rather
+  than blamed on the trims: 12,694 rows on the real log were mislabelled.
+- A wideband test asserted the stoich conflation as correct behaviour — its
+  header said "E85 changes the AFR math, not the lambda", and its assertion
+  checked the opposite. Corrected to match its own header.
+- New options: lean margin (% of commanded), and the wideband's display stoich.
+  450 assertions.
+
+### Fixed
+
+**Safety**
 
 - **A dangerously lean condition showed a green checkmark.** The WOT lean test
   was absolute — measured λ above 1.0 — so it only caught "leaner than
@@ -394,7 +461,7 @@ and every number that moved on the two real logs accounted for.
   (λ < 0.98) now counts, disclosed as an inference. On that log: 629 of 1,256
   enrichment samples flagged, every bin above 2,000 RPM.
 
-### Fixed — wrong numbers
+**Wrong numbers**
 
 - **One stoichiometric ratio converted two AFRs made with different ones.** A
   wideband's AFR is lambda × its *controller's display* stoich (14.7 by default
@@ -419,7 +486,7 @@ and every number that moved on the two real logs accounted for.
   against only those that also carried a commanded value. An on-target bin read
   14.7% lean in the test case. Now paired samples only.
 
-### Fixed — biased statistics
+**Biased statistics**
 
 - **The steady-state filter was blind on held rows.** Channels log at their own
   intervals (TPS every 200 ms) on a 100 ms grid, so a throttle ramp is a jump
@@ -433,12 +500,14 @@ and every number that moved on the two real logs accounted for.
   undoing a fix to the first. It is now undefined, and the table diff neither
   counts such cells as changed nor lets them poison the average.
 
-### Changed
-
-- Empty rows (the gap between logging sessions) are counted as `noData` rather
-  than blamed on the trims: 12,694 rows on the real log were mislabelled.
-- A wideband test asserted the stoich conflation as correct behaviour — its
-  header said "E85 changes the AFR math, not the lambda", and its assertion
-  checked the opposite. Corrected to match its own header.
-- New options: lean margin (% of commanded), and the wideband's display stoich.
-  450 assertions.
+[Unreleased]: https://github.com/ktollison/tuning-garage/compare/v0.47.0...HEAD
+[0.47.0]: https://github.com/ktollison/tuning-garage/compare/v0.46.0...v0.47.0
+[0.46.0]: https://github.com/ktollison/tuning-garage/compare/v0.45.0...v0.46.0
+[0.45.0]: https://github.com/ktollison/tuning-garage/compare/v0.44.0...v0.45.0
+[0.44.0]: https://github.com/ktollison/tuning-garage/compare/v0.43.0...v0.44.0
+[0.43.0]: https://github.com/ktollison/tuning-garage/compare/v0.42.0...v0.43.0
+[0.42.0]: https://github.com/ktollison/tuning-garage/compare/v0.41.1...v0.42.0
+[0.41.1]: https://github.com/ktollison/tuning-garage/compare/v0.41.0...v0.41.1
+[0.41.0]: https://github.com/ktollison/tuning-garage/compare/v0.40.1...v0.41.0
+[0.40.1]: https://github.com/ktollison/tuning-garage/compare/v0.40.0...v0.40.1
+[0.40.0]: https://github.com/ktollison/tuning-garage/releases/tag/v0.40.0

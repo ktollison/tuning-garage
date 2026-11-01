@@ -22,7 +22,7 @@ neither is derailing a technical thread with them.
 ## Enforcement
 
 Report a problem to the maintainer through
-[private vulnerability reporting](../../security/advisories/new) or by opening
+[private vulnerability reporting](https://github.com/ktollison/tuning-garage/security/advisories/new) or by opening
 an issue if it is not sensitive. Responses range from a request to edit a
 comment through to a block, depending on severity. The maintainer decides, and
 will say why.

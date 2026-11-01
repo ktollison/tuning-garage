@@ -23,8 +23,16 @@ import { parseXdf, readTable, diffTables } from "./modules/xdf.mjs";
 import { detectUnit, convert, DEFAULT_PREFERENCES, QUANTITIES } from "./modules/units.mjs";
 import * as scanner from "./modules/vcmscanner.mjs";
 
+// The oldest Node this app is tested on (CI runs this version and the newest).
+// Docs, launchers and CI must agree with it — scripts/check-kit-docs.mjs checks.
+const MIN_NODE = 20;
+if (Number(process.versions.node.split(".")[0]) < MIN_NODE) {
+  console.error(`Tuning Garage needs Node.js ${MIN_NODE} or newer; this machine has ${process.version}. Install the LTS version from https://nodejs.org and try again.`);
+  process.exit(1);
+}
+
 const execFileP = promisify(execFile);
-const APP_VERSION = "0.46.0"; // keep in step with CHANGELOG.md — CI enforces the match
+const APP_VERSION = "0.47.0"; // keep in step with CHANGELOG.md — CI enforces the match
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(process.env.TUNING_REPO || path.join(__dirname, ".."));
 const PUBLIC = path.join(__dirname, "public");

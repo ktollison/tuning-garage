@@ -137,8 +137,11 @@ no CLA to sign; contributions are simply under GPL-3.0, same as the rest.
 
 `main` is protected:
 
-- **CI runs on every pull request** — the tests, the no-binaries check and the
-  scrub check. Nothing gets merged with red CI.
+- **CI runs on every pull request** — the tests on Linux, Windows and macOS
+  (Node 20 and 24), the docs-match-the-code check, the no-binaries check and
+  the scrub check. The maintainer does not merge a red one. GitHub does not
+  enforce that itself: releases are pushed straight to `main`, which required
+  status checks would block.
 - **History cannot be rewritten** — no force pushes, no branch deletion. This
   is enforced for everyone, the maintainer included.
 - **Conversations must be resolved** before a pull request merges.
@@ -147,6 +150,13 @@ no CLA to sign; contributions are simply under GPL-3.0, same as the rest.
 
 Work on a branch or a fork and open a pull request. Nothing is merged with red
 CI, least of all anything touching the analysis maths.
+
+**This repository is built from a private source.** Each release is generated
+from the maintainer's working repository and copied here, so a change merged
+here is applied there and arrives in the next release — possibly reworded. It
+is why the history is a string of "Release vX.Y.Z" commits, and why a change
+made directly to this repository's files but not to the source would be
+overwritten.
 
 ## Running your own public copy
 

@@ -9,6 +9,11 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+// The notifier is a bash script that leans on POSIX tools (hostname -s, iconv).
+// Windows users run alerts from a Mac or Linux box; the logic is covered there.
+if (process.platform === "win32") { console.log("✓ skipped on Windows (bash script and POSIX tools)"); process.exit(0); }
+
+
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const SCRIPT = path.join(REPO, "scripts/notify-pushover.sh");
 const t = (c, m) => { console.log((c ? "✓ " : "✗ ") + m); if (!c) process.exitCode = 1; };

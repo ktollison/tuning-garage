@@ -1,10 +1,13 @@
 name: CI
 
 # CI for the public project AND for every private copy made from it with
-# "Use this template". The tests and smoke test run everywhere. The binary and
-# scrub checks guard what the PUBLIC project accepts; a private copy is
-# supposed to hold your stock read and tune files, so there they are skipped —
-# otherwise your first tune check-in would turn every push red.
+# "Use this template".
+#
+# Everywhere: the tests and a smoke test, on the oldest and newest supported
+# Node. Only on the PUBLIC project (github.repository below): the docs gate,
+# the binary and scrub checks, and the Windows/macOS matrix. A private copy is
+# supposed to hold your stock read and tune files and your own README, and
+# macOS minutes are ten times the price, so none of those run there.
 
 on:
   push:
@@ -14,11 +17,25 @@ on:
 jobs:
   checks:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [20, 24]
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
 
       - name: Unit tests (analysis maths)
         run: node scripts/test.mjs
+
+      # Fails when a doc names a file that is not here, a link is broken, the
+      # changelog is out of shape, or the docs and code disagree about a tab, an
+      # endpoint or the minimum Node version.
+      - name: Docs match the code
+        if: github.repository == 'ktollison/tuning-garage'
+        run: node scripts/check-kit-docs.mjs
 
       - name: No calibration binaries in the tree
         if: github.repository == 'ktollison/tuning-garage'
@@ -41,3 +58,21 @@ jobs:
         run: |
           PORT=4599 node app/server.mjs &
           PORT=4599 node scripts/smoke.mjs
+
+  # The project is used on Windows and macOS far more than Linux, and its worst
+  # bugs have been platform bugs. Public repository only.
+  cross-platform:
+    if: github.repository == 'ktollison/tuning-garage'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+        node-version: [20, 24]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+      - name: Unit tests
+        run: node scripts/test.mjs

@@ -1,5 +1,7 @@
 # Tuning Garage — User Guide
 
+*Last checked against **v0.47.0**.*
+
 A file-based system for tracking DIY engine tuning: versioned tune files,
 session logs, datalog analysis, and a learning tracker, with a local web app on
 top. It sits **around** your tuning tools — HP Tuners, PCMHammer,

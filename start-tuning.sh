@@ -6,8 +6,8 @@ cd "$(dirname "$0")"
 # surfacing later as a confusing failure.
 command -v git >/dev/null 2>&1 || { echo "Git was not found - see SETUP-MAC.md, step 1 (brew install git)."; exit 1; }
 command -v node >/dev/null 2>&1 || { echo "Node.js was not found - see SETUP-MAC.md, step 1 (brew install node)."; exit 1; }
-node -e "process.exit(+process.versions.node.split('.')[0] >= 18 ? 0 : 1)" ||
-  { echo "Node.js 18 or newer is needed - this machine has $(node --version). Run: brew upgrade node"; exit 1; }
+node -e "process.exit(+process.versions.node.split('.')[0] >= 20 ? 0 : 1)" ||
+  { echo "Node.js 20 or newer is needed - this machine has $(node --version). Run: brew upgrade node"; exit 1; }
 
 PORT="${PORT:-4590}"
 URL="http://127.0.0.1:$PORT"

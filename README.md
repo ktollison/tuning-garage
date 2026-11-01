@@ -20,7 +20,7 @@ talks to your vehicle.
 3. **Run it** — `start-tuning.cmd` (Windows) or `./start-tuning.sh` (macOS)
    opens the app at <http://127.0.0.1:4590>.
 
-Zero dependencies (plain Node 18+), bound to localhost, and nothing phones
+Zero dependencies (plain Node 20+), bound to localhost, and nothing phones
 home. Your data stays in your repository.
 
 ## Updating to a new release
@@ -110,14 +110,58 @@ Every analysis, comparison, the vehicle history and each session exports as a
 Everything the analysis produces is a **draft reading**: arithmetic on data you
 supplied, with every unit stated. Nothing here writes to a tune file.
 
+## What the code is
+
+The server is `app/server.mjs`; the page is `app/public/index.html`. Everything
+that does arithmetic lives in `app/modules/`, one concern per file:
+
+| Module | What it does |
+|---|---|
+| `index.mjs` | Registry of platform modules; picks the one that understands a bin |
+| `gm-gen3.mjs` | Gen III GM P01/P59 bin analysis: OS ID, segment checksums (verify only), VIN |
+| `xdf.mjs` | Reads TunerPro XDF definitions and the tables they describe |
+| `vcmscanner.mjs` | Reads VCM Scanner channel, chart, graph, layout and math files |
+| `units.mjs` | The only place a unit conversion happens |
+| `expr.mjs` | The arithmetic compiler behind XDF scaling and math channels |
+| `loganalysis.mjs` | Datalog parsing and every analysis: trims, wideband, knock, VE, timeline |
+| `report.mjs` | Markdown reports |
+| `scrub.mjs` | Removes VINs and locating channels from a log |
+| `submission.mjs` | Packages a log for the project and posts it |
+
+And the scripts you may run:
+
+| Script | What it does |
+|---|---|
+| `start-tuning.sh`, `start-tuning.cmd` | Launchers: pull, then start or restart the app |
+| `scripts/update.mjs` | Updates your copy to a new release |
+| `scripts/test.mjs` | Runs every test |
+| `scripts/check-kit-docs.mjs` | Fails when the docs disagree with the code |
+| `scripts/smoke.mjs` | Boots checks against a running app |
+| `scripts/version-check.mjs` | Tells the launchers whether the running app is current |
+| `scripts/scrub-log.mjs` | Redacts a log before you share it |
+| `scripts/submit-log.mjs` | Scrubs a log and sends it to the project |
+| `scripts/analyse-submission.mjs` | Summarises a submitted log for a pull request |
+| `scripts/autostart-macos.sh` | Starts the app at login on a Mac |
+| `scripts/make-demo.mjs`, `scripts/make-screenshots.sh` | Rebuild the User Guide's screenshots |
+| `scripts/setup-labels.mjs`, `scripts/check-repo-settings.mjs`, `scripts/notify-pushover.sh`, `scripts/watch-submissions.mjs` | For running a public copy; see [MAINTAINING.md](MAINTAINING.md) |
+
+The HTTP interface is in [reference/api.md](reference/api.md).
+
 ## Tests
 
 ```bash
 node scripts/test.mjs
 ```
 
-The update script runs these too. The rule they enforce: a silently wrong
-number is worse than a crash.
+```bash
+node scripts/check-kit-docs.mjs
+```
+
+The first runs the tests; the update script runs them too. The rule they
+enforce: a silently wrong number is worse than a crash. The second fails when a
+doc names a file that is not there, a link is broken, the changelog is out of
+shape, or the docs and the code disagree about a tab, an endpoint or the
+minimum Node version. CI runs both.
 
 ## Contributing
 

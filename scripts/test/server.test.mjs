@@ -195,7 +195,7 @@ try {
     t(lc.ok && lc.a.rev === "v001" && lc.b.rev === "v002", "log compare endpoint");
 
     const save = await post("/api/report/save", { vehicle: "test-car", filename: log.body.filename, markdown: log.body.markdown });
-    const saved = (await save.json()).saved;
+    const saved = (await save.json()).saved.replaceAll("\\", "/"); // the server answers with the OS's separators
     t(save.status === 200 && saved === "vehicles/test-car/reports/2026-01-03_v001_cruise_analysis.md" && fs.existsSync(path.join(REPO, saved)), `saved into reports/ (${saved})`);
     const again = await (await post("/api/report/save", { vehicle: "test-car", filename: log.body.filename, markdown: "x" })).json();
     t(/-2\.md$/.test(again.saved), "a second save never overwrites the first");
@@ -206,7 +206,8 @@ try {
   }
 
   console.log("— sharing a log —");
-  {
+  if (process.platform === "win32") console.log("✓ skipped on Windows (gh is a shell-script stub)");
+  else {
     const prep = await post("/api/submission/prepare", { path: "vehicles/test-car/datalogs/2026-01-03_v001_cruise.csv" });
     const p = await prep.json();
     t(prep.status === 200 && p.gh?.ready === true && /owner\/repo/.test(p.prefillUrl), "prepared, with gh found on the app's PATH");

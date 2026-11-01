@@ -72,7 +72,7 @@ Also worth knowing before you write: a bad **calibration** flash is easy to
 recover from; a bad **OS** flash often isn't. Prefer cal-only writes when
 they'll do the job.
 
-Worked example: [incidents/2026-06-17-p01-brick-during-sps2.md](incidents/2026-06-17-p01-brick-during-sps2.md).
+Worked example: the author lost three modules to an interface the community rates highly — see [tools/adapters.md](tools/adapters.md).
 
 ---
 

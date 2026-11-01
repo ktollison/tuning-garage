@@ -16,6 +16,10 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+// The test stubs gh and the notifier as shell scripts on a colon-separated PATH.
+if (process.platform === "win32") { console.log("✓ skipped on Windows (shell-script stubs)"); process.exit(0); }
+
+
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const t = (c, m) => { console.log((c ? "✓ " : "✗ ") + m); if (!c) process.exitCode = 1; };
 const TMP = await fsp.mkdtemp(path.join(os.tmpdir(), "watch-"));
